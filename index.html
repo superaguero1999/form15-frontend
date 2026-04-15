@@ -3,60 +3,503 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Form 15 - Module mới</title>
+  <title>Form 15 - Kiểm soát test bền</title>
   <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --blue: #2563eb;
+      --blue-soft: #dbeafe;
+      --danger: #b91c1c;
+      --ok: #047857;
+    }
+    * { box-sizing: border-box; }
     body {
-      font-family: Arial, sans-serif;
       margin: 0;
-      background: #f3f6fb;
-      color: #1f2937;
+      font-family: Inter, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
     }
     .wrap {
-      max-width: 900px;
-      margin: 48px auto;
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      padding: 24px;
-      box-shadow: 0 6px 24px rgba(15, 23, 42, 0.06);
+      width: min(1400px, 96vw);
+      margin: 24px auto;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
     }
     .badge {
-      display: inline-block;
-      background: #dbeafe;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--blue-soft);
       color: #1d4ed8;
       padding: 4px 10px;
       border-radius: 999px;
       font-size: 12px;
-      margin-bottom: 12px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.3;
+    }
+    p {
+      margin: 8px 0 0;
+      color: var(--muted);
     }
     .actions {
-      margin-top: 20px;
       display: flex;
       gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
     }
     .btn {
-      border: 1px solid #d1d5db;
+      border: 1px solid #cbd5e1;
       border-radius: 8px;
       padding: 10px 14px;
       text-decoration: none;
-      color: #111827;
+      color: #0f172a;
+      background: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn:hover { filter: brightness(0.98); }
+    .btn-primary {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+    .status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8fafc;
+      font-size: 14px;
+      color: #334155;
+      white-space: pre-wrap;
+    }
+    .status.ok { border-color: #a7f3d0; background: #ecfdf5; color: var(--ok); }
+    .status.err { border-color: #fecaca; background: #fef2f2; color: var(--danger); }
+    .meta {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .table-wrap {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: auto;
+      max-height: 72vh;
       background: #fff;
     }
-    .btn-primary {
-      background: #2563eb;
-      color: #fff;
-      border-color: #2563eb;
+    table {
+      border-collapse: collapse;
+      width: max-content;
+      min-width: 100%;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f8fafc;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    td small {
+      color: var(--muted);
+      display: block;
+      margin-top: 2px;
+    }
+    .empty {
+      padding: 22px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
     }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <main class="wrap">
-    <div class="badge">Demo điều hướng</div>
-    <h1>Form 15 - Module tách rời</h1>
-    <p>Trang này dùng để kiểm tra việc điều hướng từ Cổng tác vụ sang module Form 15 mới.</p>
-    <div class="actions">
-      <a class="btn btn-primary" href="../index.html">Quay về Cổng tác vụ</a>
+    <div class="badge">Form 15</div>
+    <div class="topbar">
+      <div>
+        <h1>Kiểm soát test bền</h1>
+        <p>Quét NocoDB, đọc file Excel và lọc các hạng mục có "Đánh giá = Test bền".</p>
+      </div>
+      <div class="actions">
+        <button id="refresh-btn" class="btn btn-primary" type="button">Refresh dữ liệu</button>
+      </div>
+    </div>
+
+    <div id="status-box" class="status">Sẵn sàng quét dữ liệu.</div>
+    <div id="meta-box" class="meta"></div>
+
+    <div class="table-wrap">
+      <div id="table-root" class="empty">Chưa có dữ liệu. Nhấn "Refresh dữ liệu" để bắt đầu quét.</div>
     </div>
   </main>
+
+  <script>
+    /*
+      Tất cả cấu hình tập trung tại đây để sau này chỉnh nhanh:
+      - nocodb api/token
+      - field chứa link excel
+      - sheet cần đọc
+      - từ khóa và tên cột
+    */
+    const CONFIG = {
+      nocodb: {
+        baseUrl: "https://iatzhxxuk.tino.page/api/v2/tables/mnwnhukgbu8zs9o/records",
+        viewId: "vwnqck09ijylco3b",
+        limit: 100,
+        token: "G3QREWJrrT_E7QHPfteLJlI90zab7mUW_jNMwZIu",
+      },
+      excelFieldId: "crku7xup01g0rxx",
+      sheetNames: ["TCKT", "THEM"],
+      testBenKeyword: "test ben",
+      danhGiaHeaderCandidates: ["Đánh giá", "Danh gia"],
+      taskCodeCandidates: ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"],
+      taskNameCandidates: ["Tên tác vụ", "Ten tac vu", "Task name", "Task"],
+    };
+
+    const ui = {
+      refreshBtn: document.getElementById("refresh-btn"),
+      statusBox: document.getElementById("status-box"),
+      metaBox: document.getElementById("meta-box"),
+      tableRoot: document.getElementById("table-root"),
+    };
+
+    function normalizeText(input) {
+      return String(input || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    }
+
+    function normalizeCompact(input) {
+      return normalizeText(input).replace(/\s+/g, "");
+    }
+
+    function isSameLoose(a, b) {
+      return normalizeCompact(a) === normalizeCompact(b);
+    }
+
+    function isTestBenValue(value) {
+      return normalizeCompact(value).includes(normalizeCompact(CONFIG.testBenKeyword));
+    }
+
+    function htmlEscape(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function setStatus(message, type) {
+      ui.statusBox.textContent = message;
+      ui.statusBox.classList.remove("ok", "err");
+      if (type === "ok") ui.statusBox.classList.add("ok");
+      if (type === "err") ui.statusBox.classList.add("err");
+    }
+
+    function getSheetAliasMap() {
+      const map = new Map();
+      for (const sheet of CONFIG.sheetNames) {
+        map.set(normalizeCompact(sheet), sheet);
+      }
+      return map;
+    }
+
+    function getRecordFields(record) {
+      if (record && record.fields && typeof record.fields === "object") return record.fields;
+      return record || {};
+    }
+
+    function getTaskMetaFromRecord(record) {
+      const fields = getRecordFields(record);
+      const entries = Object.entries(fields);
+
+      const pickByCandidates = (candidates) => {
+        for (const [key, value] of entries) {
+          for (const cand of candidates) {
+            if (isSameLoose(key, cand) && value !== null && value !== undefined && String(value).trim() !== "") {
+              return String(value);
+            }
+          }
+        }
+        return "";
+      };
+
+      const taskCode = pickByCandidates(CONFIG.taskCodeCandidates) || String(record?.id || record?.Id || "");
+      const taskName = pickByCandidates(CONFIG.taskNameCandidates) || "";
+
+      return { taskCode, taskName };
+    }
+
+    function collectExcelUrls(rawValue) {
+      const urls = new Set();
+
+      const addFromText = (text) => {
+        const str = String(text || "");
+        const found = str.match(/https?:\/\/[^\s"'<>\]]+/g) || [];
+        for (const u of found) urls.add(u);
+      };
+
+      const walk = (value) => {
+        if (value === null || value === undefined) return;
+        if (Array.isArray(value)) {
+          value.forEach(walk);
+          return;
+        }
+        if (typeof value === "object") {
+          for (const [k, v] of Object.entries(value)) {
+            if (["url", "signedUrl", "path", "downloadUrl", "title", "name"].includes(k)) addFromText(v);
+            walk(v);
+          }
+          return;
+        }
+        addFromText(value);
+      };
+
+      walk(rawValue);
+      return [...urls].filter((u) => /\.(xlsx?|xlsm|xlsb)(\?|#|$)/i.test(u));
+    }
+
+    async function fetchAllRecords() {
+      const allRows = [];
+      let offset = 0;
+      const limit = CONFIG.nocodb.limit;
+
+      for (;;) {
+        const url = new URL(CONFIG.nocodb.baseUrl);
+        url.searchParams.set("offset", String(offset));
+        url.searchParams.set("limit", String(limit));
+        url.searchParams.set("where", "");
+        url.searchParams.set("viewId", CONFIG.nocodb.viewId);
+
+        const resp = await fetch(url.toString(), {
+          method: "GET",
+          headers: {
+            "xc-token": CONFIG.nocodb.token,
+          },
+        });
+
+        if (!resp.ok) {
+          throw new Error("NocoDB trả lỗi HTTP " + resp.status);
+        }
+
+        const data = await resp.json();
+        const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
+        allRows.push(...list);
+
+        if (list.length < limit) break;
+        offset += limit;
+      }
+
+      return allRows;
+    }
+
+    function findDanhGiaColumnIndex(headers) {
+      for (let i = 0; i < headers.length; i += 1) {
+        const header = headers[i];
+        for (const candidate of CONFIG.danhGiaHeaderCandidates) {
+          if (isSameLoose(header, candidate)) return i;
+        }
+      }
+      return -1;
+    }
+
+    function rowToObject(headers, row) {
+      const obj = {};
+      for (let i = 0; i < headers.length; i += 1) {
+        const key = String(headers[i] || "Cột_" + (i + 1)).trim() || "Cột_" + (i + 1);
+        obj[key] = row[i] ?? "";
+      }
+      return obj;
+    }
+
+    async function scanWorkbook(fileUrl, taskMeta, globalResult, progress) {
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        throw new Error("Tải file Excel lỗi HTTP " + response.status);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const sheetAliasMap = getSheetAliasMap();
+
+      for (const sheetName of workbook.SheetNames) {
+        const normalizedSheetName = normalizeCompact(sheetName);
+        const canonicalSheet = sheetAliasMap.get(normalizedSheetName);
+        if (!canonicalSheet) continue;
+
+        const worksheet = workbook.Sheets[sheetName];
+        const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+        if (!matrix.length) continue;
+
+        const headers = (matrix[0] || []).map((v) => String(v || "").trim());
+        const danhGiaColIndex = findDanhGiaColumnIndex(headers);
+        if (danhGiaColIndex < 0) continue;
+
+        for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+          const row = matrix[rowIndex] || [];
+          const danhGiaValue = row[danhGiaColIndex] || "";
+          if (!isTestBenValue(danhGiaValue)) continue;
+
+          const rowData = rowToObject(headers, row);
+          globalResult.push({
+            taskCode: taskMeta.taskCode,
+            taskName: taskMeta.taskName,
+            sheetName: canonicalSheet,
+            sourceSheetName: sheetName,
+            fileUrl,
+            rowData,
+          });
+        }
+      }
+
+      if (typeof progress === "function") progress();
+    }
+
+    function renderTable(rows) {
+      if (!rows.length) {
+        ui.tableRoot.innerHTML = '<div class="empty">Không tìm thấy dòng nào có "Đánh giá = Test bền".</div>';
+        return;
+      }
+
+      const dynamicCols = [];
+      const seenCols = new Set();
+      for (const item of rows) {
+        for (const key of Object.keys(item.rowData || {})) {
+          if (!seenCols.has(key)) {
+            seenCols.add(key);
+            dynamicCols.push(key);
+          }
+        }
+      }
+
+      const baseHeaders = ["STT", "Mã tác vụ", "Tên tác vụ", "Sheet", "Link file"];
+      const allHeaders = baseHeaders.concat(dynamicCols);
+
+      let html = "<table><thead><tr>";
+      for (const h of allHeaders) html += "<th>" + htmlEscape(h) + "</th>";
+      html += "</tr></thead><tbody>";
+
+      for (let i = 0; i < rows.length; i += 1) {
+        const item = rows[i];
+        html += "<tr>";
+        html += "<td>" + (i + 1) + "</td>";
+        html += "<td>" + htmlEscape(item.taskCode) + "</td>";
+        html += "<td>" + htmlEscape(item.taskName) + "</td>";
+        html += "<td>" + htmlEscape(item.sheetName) + "<small>Nguồn: " + htmlEscape(item.sourceSheetName) + "</small></td>";
+        html += '<td><a href="' + htmlEscape(item.fileUrl) + '" target="_blank" rel="noopener">Mở file</a></td>';
+
+        for (const col of dynamicCols) {
+          const val = item.rowData[col] ?? "";
+          html += '<td class="mono">' + htmlEscape(val) + "</td>";
+        }
+
+        html += "</tr>";
+      }
+
+      html += "</tbody></table>";
+      ui.tableRoot.innerHTML = html;
+    }
+
+    async function runRefresh() {
+      ui.refreshBtn.disabled = true;
+      const startedAt = performance.now();
+      try {
+        setStatus("Đang lấy dữ liệu từ NocoDB...", "");
+        ui.metaBox.textContent = "";
+
+        const records = await fetchAllRecords();
+        const excelField = CONFIG.excelFieldId;
+        const files = [];
+
+        for (const record of records) {
+          const fields = getRecordFields(record);
+          const urls = collectExcelUrls(fields[excelField]);
+          if (!urls.length) continue;
+
+          const taskMeta = getTaskMetaFromRecord(record);
+          for (const url of urls) files.push({ url, taskMeta });
+        }
+
+        if (!files.length) {
+          renderTable([]);
+          setStatus("Không có file Excel hợp lệ trong field cấu hình.", "err");
+          return;
+        }
+
+        const results = [];
+        let doneCount = 0;
+        const updateProgress = () => {
+          doneCount += 1;
+          setStatus("Đang quét Excel... " + doneCount + "/" + files.length, "");
+        };
+
+        for (const file of files) {
+          try {
+            await scanWorkbook(file.url, file.taskMeta, results, updateProgress);
+          } catch (error) {
+            updateProgress();
+            console.warn("Scan workbook failed", file.url, error);
+          }
+        }
+
+        renderTable(results);
+        const elapsed = Math.round(performance.now() - startedAt);
+        ui.metaBox.textContent = [
+          "Bản ghi NocoDB: " + records.length,
+          "File Excel quét: " + files.length,
+          "Dòng Test bền tìm được: " + results.length,
+          "Thời gian: " + elapsed + " ms",
+          "Sheets cấu hình: " + CONFIG.sheetNames.join(", "),
+        ].join(" | ");
+        setStatus("Hoàn tất quét dữ liệu.", "ok");
+      } catch (error) {
+        console.error(error);
+        setStatus("Lỗi: " + (error?.message || String(error)), "err");
+      } finally {
+        ui.refreshBtn.disabled = false;
+      }
+    }
+
+    ui.refreshBtn.addEventListener("click", runRefresh);
+  </script>
 </body>
 </html>
