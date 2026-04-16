@@ -31,14 +31,23 @@
       const fetchResult = await dataService.fetchAllRecords(CONFIG);
       const records = fetchResult.rows;
       const files = [];
+      const demoLimit = Math.max(1, Number(CONFIG.demo?.maxFiles || 1));
+      const useSampleOnly = demoMode && !!(CONFIG.demo && CONFIG.demo.sampleFileUrl);
 
-      for (const record of records) {
-        const fields = dataService.getRecordFields(record);
-        const excelValue = dataService.getExcelFieldValue(CONFIG, fields);
-        const urls = dataService.collectExcelUrls(excelValue);
-        if (!urls.length) continue;
-        const taskMeta = dataService.getTaskMetaFromRecord(CONFIG, record);
-        for (const url of urls) files.push({ url, taskMeta });
+      if (!useSampleOnly) {
+        for (const record of records) {
+          const fields = dataService.getRecordFields(record);
+          const excelValue = dataService.getExcelFieldValue(CONFIG, fields);
+          const urls = dataService.collectExcelUrls(excelValue);
+          if (!urls.length) continue;
+          const taskMeta = dataService.getTaskMetaFromRecord(CONFIG, record);
+          for (const url of urls) {
+            files.push({ url, taskMeta });
+            // Demo mode: dung som ngay khi du file de scan nhanh.
+            if (demoMode && files.length >= demoLimit) break;
+          }
+          if (demoMode && files.length >= demoLimit) break;
+        }
       }
 
       if (!files.length) {
@@ -58,8 +67,7 @@
         if (CONFIG.demo && CONFIG.demo.sampleFileUrl) {
           return [{ url: CONFIG.demo.sampleFileUrl, taskMeta: { taskCode: "DEMO", taskName: "Demo scan 1 file" } }];
         }
-        const max = Math.max(1, Number(CONFIG.demo?.maxFiles || 1));
-        return files.slice(0, max);
+        return files.slice(0, demoLimit);
       })() : files;
 
       const results = [];
