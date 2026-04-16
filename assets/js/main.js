@@ -7,6 +7,7 @@
   const renderService = global.Form15RenderService;
 
   const ui = {
+    demoBtn: document.getElementById("demo-btn"),
     refreshBtn: document.getElementById("refresh-btn"),
     statusBox: document.getElementById("status-box"),
     metaBox: document.getElementById("meta-box"),
@@ -17,12 +18,14 @@
 
   async function runRefresh(options = {}) {
     const silent = !!options.silent;
+    const demoMode = !!options.demoMode;
     if (isRefreshing) return;
     isRefreshing = true;
     ui.refreshBtn.disabled = true;
+    if (ui.demoBtn) ui.demoBtn.disabled = true;
     const startedAt = performance.now();
     try {
-      if (!silent) renderService.setStatus(ui, "Đang lấy dữ liệu từ NocoDB...", "");
+      if (!silent) renderService.setStatus(ui, demoMode ? "Đang lấy dữ liệu demo..." : "Đang lấy dữ liệu từ NocoDB...", "");
       ui.metaBox.textContent = "";
 
       const fetchResult = await dataService.fetchAllRecords(CONFIG);
@@ -51,15 +54,23 @@
         return;
       }
 
+      const filesToScan = demoMode ? (function pickDemoFiles() {
+        if (CONFIG.demo && CONFIG.demo.sampleFileUrl) {
+          return [{ url: CONFIG.demo.sampleFileUrl, taskMeta: { taskCode: "DEMO", taskName: "Demo scan 1 file" } }];
+        }
+        const max = Math.max(1, Number(CONFIG.demo?.maxFiles || 1));
+        return files.slice(0, max);
+      })() : files;
+
       const results = [];
       const scanStats = { fileErrors: 0, sheetsMatched: 0, sheetsMissingDanhGia: 0, matchedRows: 0 };
       let doneCount = 0;
       const updateProgress = () => {
         doneCount += 1;
-        renderService.setStatus(ui, "Đang quét Excel... " + doneCount + "/" + files.length, "");
+        renderService.setStatus(ui, "Đang quét Excel... " + doneCount + "/" + filesToScan.length, "");
       };
 
-      for (const file of files) {
+      for (const file of filesToScan) {
         try {
           await excelService.scanWorkbook(CONFIG, dataService, file.url, file.taskMeta, results, updateProgress, scanStats);
         } catch (error) {
@@ -73,7 +84,7 @@
       const elapsed = Math.round(performance.now() - startedAt);
       ui.metaBox.textContent = [
         "Bản ghi NocoDB: " + records.length,
-        "File Excel quét: " + files.length,
+        "File Excel quét: " + filesToScan.length + (demoMode ? " (demo)" : ""),
         "Dòng Test bền tìm được: " + results.length,
         "File lỗi: " + scanStats.fileErrors,
         "Sheet có cột Đánh giá: " + scanStats.sheetsMatched,
@@ -83,7 +94,7 @@
         "NocoDB auth mode: " + fetchResult.authMode,
         "Sheets cấu hình: " + CONFIG.sheetNames.join(", "),
       ].join(" | ");
-      renderService.setStatus(ui, "Hoàn tất quét dữ liệu.", "ok");
+      renderService.setStatus(ui, demoMode ? "Hoàn tất quét DEMO 1 file." : "Hoàn tất quét dữ liệu.", "ok");
       cacheService.saveCache(CACHE_CONFIG, {
         savedAt: nowMs(),
         results,
@@ -106,6 +117,7 @@
     } finally {
       isRefreshing = false;
       ui.refreshBtn.disabled = false;
+      if (ui.demoBtn) ui.demoBtn.disabled = false;
     }
   }
 
@@ -119,6 +131,9 @@
   }
 
   ui.refreshBtn.addEventListener("click", () => runRefresh({ silent: false }));
+  if (ui.demoBtn) {
+    ui.demoBtn.addEventListener("click", () => runRefresh({ silent: false, demoMode: true }));
+  }
   bootFromCacheThenRefresh();
   setInterval(() => {
     if (!document.hidden) runRefresh({ silent: true });

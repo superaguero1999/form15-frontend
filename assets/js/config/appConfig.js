@@ -1,5 +1,10 @@
 (function initForm15Config(global) {
   const CONFIG = {
+    demo: {
+      enabled: true,
+      maxFiles: 1,
+      sampleFileUrl: "",
+    },
     nocodb: {
       proxyUrl: "https://form15-nocodb-proxy.superaguero1999.workers.dev",
       host: "https://iatzhxxuk.tino.page",
