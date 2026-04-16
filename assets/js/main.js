@@ -70,12 +70,24 @@
         return files.slice(0, demoLimit);
       })() : files;
 
+      renderService.setStatus(
+        ui,
+        demoMode
+          ? "Đang quét DEMO... 0/" + filesToScan.length
+          : "Đang quét Excel... 0/" + filesToScan.length,
+        ""
+      );
+
       const results = [];
       const scanStats = { fileErrors: 0, sheetsMatched: 0, sheetsMissingDanhGia: 0, matchedRows: 0 };
       let doneCount = 0;
       const updateProgress = () => {
         doneCount += 1;
-        renderService.setStatus(ui, "Đang quét Excel... " + doneCount + "/" + filesToScan.length, "");
+        renderService.setStatus(
+          ui,
+          (demoMode ? "Đang quét DEMO... " : "Đang quét Excel... ") + doneCount + "/" + filesToScan.length,
+          ""
+        );
       };
 
       for (const file of filesToScan) {
@@ -135,7 +147,7 @@
     renderService.renderTable(ui, cache.results || []);
     ui.metaBox.textContent = (cache.metaText || "") + " | Cache lúc: " + formatTime(cache.savedAt);
     renderService.setStatus(ui, cache.statusText || "Đã nạp dữ liệu cache.", cache.statusType || "");
-    if (!cacheService.isCacheFresh(CACHE_CONFIG, cache)) runRefresh({ silent: true });
+    // Khong auto full refresh luc mo trang de tranh gay nham lan voi mode DEMO.
   }
 
   ui.refreshBtn.addEventListener("click", () => runRefresh({ silent: false }));
@@ -143,8 +155,10 @@
     ui.demoBtn.addEventListener("click", () => runRefresh({ silent: false, demoMode: true }));
   }
   bootFromCacheThenRefresh();
-  setInterval(() => {
-    if (!document.hidden) runRefresh({ silent: true });
-  }, CACHE_CONFIG.autoRefreshMs);
+  if (Number(CACHE_CONFIG.autoRefreshMs || 0) > 0) {
+    setInterval(() => {
+      if (!document.hidden) runRefresh({ silent: true });
+    }, CACHE_CONFIG.autoRefreshMs);
+  }
 })(window);
 
