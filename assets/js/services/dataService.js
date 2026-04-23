@@ -101,7 +101,9 @@
     };
     const taskCode = pickByCandidates(config.taskCodeCandidates) || String(record?.id || record?.Id || "");
     const taskName = pickByCandidates(config.taskNameCandidates) || "";
-    return { taskCode, taskName };
+    const assignee = pickByCandidates(config.assigneeCandidates || []);
+    const completionActual = pickByCandidates(config.completionActualCandidates || []);
+    return { taskCode, taskName, assignee, completionActual };
   }
 
   function isTestBenValue(config, value) {
