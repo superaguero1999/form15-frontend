@@ -5,7 +5,7 @@ compatibility_date = "2026-04-28"
 # KV lưu cursor batch scan
 [[kv_namespaces]]
 binding = "SCAN_STATE_KV"
-id = "PUT_YOUR_KV_NAMESPACE_ID_HERE"
+id = "2b52ef90f7c04e6fa02ceb35b7f6a930"
 
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
