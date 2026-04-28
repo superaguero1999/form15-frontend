@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 
+const CODE_VERSION = "scanner-v2-testben-debug-2026-04-28";
+
 export default {
   async fetch(request, env) {
     const cors = {
@@ -11,20 +13,20 @@ export default {
 
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== "/scan") {
-      return json({ error: "Not found" }, 404, cors);
+      return json({ error: "Not found", version: CODE_VERSION }, 404, cors);
     }
 
     const secret = s(env.SCAN_SECRET);
     if (secret) {
       const got = s(request.headers.get("x-auto-scan-secret"));
-      if (got !== secret) return json({ error: "UNAUTHORIZED" }, 401, cors);
+      if (got !== secret) return json({ error: "UNAUTHORIZED", version: CODE_VERSION }, 401, cors);
     }
 
     try {
       const result = await runScan(env);
-      return json({ ok: true, ...result }, 200, cors);
+      return json({ ok: true, version: CODE_VERSION, ...result }, 200, cors);
     } catch (e) {
-      return json({ ok: false, error: String(e?.message || e || "") }, 500, cors);
+      return json({ ok: false, version: CODE_VERSION, error: String(e?.message || e || "") }, 500, cors);
     }
   },
 };
@@ -36,12 +38,35 @@ function n(v) {
   return Number.isFinite(Number(v)) ? Number(v) : 0;
 }
 function norm(v) {
-  return s(v).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return s(v)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
 }
+
 function isTestBen(v) {
-  const x = norm(v);
-  return x.includes("testben") || x.includes("testbend");
+  const raw = s(v);
+  const x = norm(raw);
+
+  // Match rộng hơn cho các biến thể thực tế
+  if (!x) return false;
+  if (x.includes("testben")) return true;
+  if (x.includes("testbendat")) return true;
+  if (x.includes("testbenkhongdat")) return true;
+  if (x.includes("testbenok")) return true;
+  if (x.includes("testbenfail")) return true;
+
+  // fallback theo raw có dấu
+  const lowerRaw = raw.toLowerCase();
+  if (lowerRaw.includes("test bền")) return true;
+  if (lowerRaw.includes("test-bền")) return true;
+  if (lowerRaw.includes("test ben")) return true;
+  if (lowerRaw.includes("test-ben")) return true;
+
+  return false;
 }
+
 function pick(obj, keys) {
   for (const k of keys) {
     if (Object.prototype.hasOwnProperty.call(obj, k)) {
@@ -51,6 +76,7 @@ function pick(obj, keys) {
   }
   return "";
 }
+
 function rowKey(taskCode, sheetName, excelRowIndex, fileUrl) {
   const t = s(taskCode);
   const sh = s(sheetName);
@@ -58,8 +84,9 @@ function rowKey(taskCode, sheetName, excelRowIndex, fileUrl) {
   if (t) return `${t}__${sh}__${idx}`;
   return `${s(fileUrl)}__${sh}__${idx}`;
 }
+
 function unwrap(rec) {
-  return rec?.fields && typeof rec.fields === "object" ? rec.fields : (rec || {});
+  return rec?.fields && typeof rec.fields === "object" ? rec.fields : rec || {};
 }
 
 async function fetchJson(url, options = {}) {
@@ -139,21 +166,53 @@ function cellText(ws, r, c) {
   return s(cell.v);
 }
 
+function headerMatches(cellValue, aliases) {
+  const h = norm(cellValue);
+  if (!h) return false;
+  for (const a of aliases) {
+    const na = norm(a);
+    if (!na) continue;
+    if (h === na || h.includes(na) || na.includes(h)) return true;
+  }
+  return false;
+}
+
 function findHeader(ws, range, aliases) {
-  const maxProbe = Math.min(range.e.r, range.s.r + 20);
+  const maxProbe = Math.min(range.e.r, range.s.r + 40);
   for (let r = range.s.r; r <= maxProbe; r += 1) {
     const headers = [];
     for (let c = range.s.c; c <= range.e.c; c += 1) headers.push(cellText(ws, r, c));
 
     let idx = -1;
     for (let i = 0; i < headers.length; i += 1) {
-      const h = norm(headers[i]);
-      if (aliases.some((a) => h === norm(a))) {
+      if (headerMatches(headers[i], aliases)) {
         idx = i;
         break;
       }
     }
     if (idx >= 0) return { headerRow: r, danhGiaCol: range.s.c + idx, headers };
+  }
+  return null;
+}
+
+function findDanhGiaColumnFallback(ws, range) {
+  const aliases = [
+    "Đánh giá",
+    "Danh gia",
+    "Kết quả",
+    "Ket qua",
+    "Result",
+    "ĐG",
+    "DG",
+  ];
+  const maxProbe = Math.min(range.e.r, range.s.r + 50);
+  for (let r = range.s.r; r <= maxProbe; r += 1) {
+    for (let c = range.s.c; c <= range.e.c; c += 1) {
+      const txt = cellText(ws, r, c);
+      if (headerMatches(txt, aliases)) {
+        return { headerRow: r, danhGiaCol: c };
+      }
+    }
   }
   return null;
 }
@@ -180,9 +239,12 @@ function extractDisplayRow(ws, rowIdx, headerRow, startCol, endCol) {
   return out;
 }
 
-async function parseOneWorkbook(env, sourceFields) {
+async function parseOneWorkbook(env, sourceFields, dbg) {
   const fileUrl = s(pick(sourceFields, ["Link BCexcel", "Link file", "fileUrl"]));
-  if (!fileUrl) return [];
+  if (!fileUrl) {
+    dbg.fileNoUrl += 1;
+    return [];
+  }
 
   const taskCode = s(pick(sourceFields, ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"]));
   const taskName = s(pick(sourceFields, ["Tên tác vụ", "Ten tac vu", "Task name", "Task"]));
@@ -194,23 +256,59 @@ async function parseOneWorkbook(env, sourceFields) {
   const ab = await downloadExcel(env, fileUrl);
   const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
 
-  const allowedSheets = s(env.SCAN_SHEETS || "TCKT,THEM").split(",").map((x) => norm(x)).filter(Boolean);
+  const allowedSheets = s(env.SCAN_SHEETS || "TCKT,THEM")
+    .split(",")
+    .map((x) => norm(x))
+    .filter(Boolean);
+
   const rows = [];
+  let anySheetMatched = false;
+  let anyHeaderFound = false;
+  let anyTestBenFound = false;
 
   for (const sn of wb.SheetNames || []) {
-    if (!allowedSheets.includes(norm(sn))) continue;
+    if (!allowedSheets.includes(norm(sn))) {
+      dbg.sheetSkippedByName += 1;
+      continue;
+    }
 
+    anySheetMatched = true;
     const ws = wb.Sheets[sn];
-    if (!ws?.["!ref"]) continue;
+    if (!ws?.["!ref"]) {
+      dbg.sheetNoRef += 1;
+      continue;
+    }
+
     const range = XLSX.utils.decode_range(ws["!ref"]);
-    const hi = findHeader(ws, range, ["Đánh giá", "Danh gia"]);
-    if (!hi) continue;
+    let hi = findHeader(ws, range, [
+      "Đánh giá",
+      "Danh gia",
+      "Kết quả",
+      "Ket qua",
+      "Result",
+      "ĐG",
+      "DG",
+    ]);
+
+    if (!hi) {
+      const fb = findDanhGiaColumnFallback(ws, range);
+      if (fb) hi = { headerRow: fb.headerRow, danhGiaCol: fb.danhGiaCol, headers: [] };
+    }
+
+    if (!hi) {
+      dbg.sheetNoHeader += 1;
+      continue;
+    }
+
+    anyHeaderFound = true;
 
     for (let r = hi.headerRow + 1; r <= range.e.r; r += 1) {
       const danhGia = cellText(ws, r, hi.danhGiaCol);
       if (!isTestBen(danhGia)) continue;
 
+      anyTestBenFound = true;
       const excelRowIndex = r + 1;
+
       rows.push({
         rowKey: rowKey(taskCode, sn, excelRowIndex, fileUrl),
         taskCode,
@@ -226,6 +324,10 @@ async function parseOneWorkbook(env, sourceFields) {
       });
     }
   }
+
+  if (!anySheetMatched) dbg.fileNoAllowedSheet += 1;
+  if (anySheetMatched && !anyHeaderFound) dbg.fileNoDanhGiaHeader += 1;
+  if (anySheetMatched && anyHeaderFound && !anyTestBenFound) dbg.fileNoTestBenRows += 1;
 
   return rows;
 }
@@ -250,12 +352,12 @@ function buildTargetFields(it) {
     "Tên tác vụ": s(it.taskName),
     "Asignee": s(it.assignee),
     "Ngày trả báo cáo tức thời": s(it.completionActual),
-    "Sheet": s(it.sheetName),
+    Sheet: s(it.sheetName),
     "Nguồn": s(it.sourceSheetName),
     "Link file": s(it.fileUrl),
     "Đánh giá": s(it.danhGiaValue),
 
-    "STT": s(rd["STT"]),
+    STT: s(rd["STT"]),
     "Công chuẩn": s(rd["Công chuẩn"]),
     "Mã danh mục": s(rd["Mã danh mục"]),
     "Hạng mục kiểm tra (Index)": s(rd["Hạng mục kiểm tra (Index)"]),
@@ -398,8 +500,8 @@ async function runScan(env) {
     throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
-  const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 3000));
-  const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 6));
+  const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 300));
+  const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 1));
 
   const sourceRecords = await listNocoRecords({
     host,
@@ -410,12 +512,22 @@ async function runScan(env) {
     max: maxRecords,
   });
 
-  let fileErrors = 0;
+  const dbg = {
+    fileNoUrl: 0,
+    sheetSkippedByName: 0,
+    sheetNoRef: 0,
+    sheetNoHeader: 0,
+    fileNoAllowedSheet: 0,
+    fileNoDanhGiaHeader: 0,
+    fileNoTestBenRows: 0,
+    fileParseError: 0,
+  };
+
   const scanned = await pool(sourceRecords, conc, async (rec) => {
     try {
-      return await parseOneWorkbook(env, unwrap(rec));
+      return await parseOneWorkbook(env, unwrap(rec), dbg);
     } catch {
-      fileErrors += 1;
+      dbg.fileParseError += 1;
       return [];
     }
   });
@@ -429,12 +541,13 @@ async function runScan(env) {
 
   return {
     scannedSourceRecords: sourceRecords.length,
-    excelFilesErrorTotal: fileErrors,
+    excelFilesErrorTotal: dbg.fileParseError,
     rowsMatchedTestBen: rows.length,
     rowsAfterDedup: finalRows.length,
     targetCreated: sync.created,
     targetUpdated: sync.updated,
     targetExisting: sync.existing,
+    debug: dbg,
   };
 }
 
