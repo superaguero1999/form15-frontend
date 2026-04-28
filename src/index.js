@@ -66,7 +66,11 @@ async function fetchJson(url, options = {}) {
   const resp = await fetch(url, options);
   const text = await resp.text();
   if (!resp.ok) throw new Error(`HTTP ${resp.status} ${url}\n${text.slice(0, 500)}`);
-  try { return JSON.parse(text); } catch { return {}; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
 }
 
 async function listNocoRecords({ host, token, tableId, viewId = "", limit = 200, max = 5000 }) {
@@ -106,10 +110,12 @@ function driveCandidates(rawUrl) {
 }
 
 async function downloadExcel(env, fileUrl) {
-  const proxy = s(env.TARGET_PROXY_URL); // dùng worker A để bypass CORS/redirect
-  const candidates = driveCandidates(fileUrl).map((u) => `${proxy}?fileUrl=${encodeURIComponent(u)}`);
+  const proxy = s(env.TARGET_PROXY_URL).replace(/\/+$/, "");
+  if (!proxy) throw new Error("Missing env: TARGET_PROXY_URL (used to download excel)");
 
+  const candidates = driveCandidates(fileUrl).map((u) => `${proxy}?fileUrl=${encodeURIComponent(u)}`);
   let lastErr = "";
+
   for (const c of candidates) {
     try {
       const r = await fetch(c);
@@ -138,10 +144,14 @@ function findHeader(ws, range, aliases) {
   for (let r = range.s.r; r <= maxProbe; r += 1) {
     const headers = [];
     for (let c = range.s.c; c <= range.e.c; c += 1) headers.push(cellText(ws, r, c));
+
     let idx = -1;
     for (let i = 0; i < headers.length; i += 1) {
       const h = norm(headers[i]);
-      if (aliases.some((a) => h === norm(a))) { idx = i; break; }
+      if (aliases.some((a) => h === norm(a))) {
+        idx = i;
+        break;
+      }
     }
     if (idx >= 0) return { headerRow: r, danhGiaCol: range.s.c + idx, headers };
   }
@@ -177,7 +187,9 @@ async function parseOneWorkbook(env, sourceFields) {
   const taskCode = s(pick(sourceFields, ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"]));
   const taskName = s(pick(sourceFields, ["Tên tác vụ", "Ten tac vu", "Task name", "Task"]));
   const assignee = s(pick(sourceFields, ["Asignee", "Assignee", "Người phụ trách", "Nguoi phu trach"]));
-  const completionActual = s(pick(sourceFields, ["Ngày trả báo cáo tức thời", "Ngay tra bao cao tuc thoi", "Ngày hoàn thành thực tế"]));
+  const completionActual = s(
+    pick(sourceFields, ["Ngày trả báo cáo tức thời", "Ngay tra bao cao tuc thoi", "Ngày hoàn thành thực tế"])
+  );
 
   const ab = await downloadExcel(env, fileUrl);
   const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
@@ -258,22 +270,35 @@ function buildTargetFields(it) {
   };
 }
 
-async function listTargetViaProxy(proxyBase) {
+async function listTargetDirect(env) {
+  const host = s(env.TARGET_NOCO_HOST).replace(/\/+$/, "");
+  const tableId = s(env.TARGET_TABLE_ID);
+  const token = s(env.TARGET_NOCO_TOKEN);
+  if (!host || !tableId || !token) {
+    throw new Error("Missing env: TARGET_NOCO_HOST, TARGET_TABLE_ID, TARGET_NOCO_TOKEN");
+  }
+
   const out = [];
   let offset = 0;
   const limit = 200;
+
   while (true) {
-    const u = new URL(proxyBase);
-    u.searchParams.set("mode", "target");
+    const u = new URL(`${host}/api/v2/tables/${tableId}/records`);
     u.searchParams.set("offset", String(offset));
     u.searchParams.set("limit", String(limit));
     u.searchParams.set("where", "");
-    const data = await fetchJson(u.toString(), { method: "GET" });
+
+    const data = await fetchJson(u.toString(), {
+      method: "GET",
+      headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
+    });
+
     const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
     out.push(...list);
     if (list.length < limit) break;
     offset += limit;
   }
+
   return out;
 }
 
@@ -288,8 +313,50 @@ function mapRowKeyToId(targetRows) {
   return m;
 }
 
-async function syncTarget(proxyBase, rows) {
-  const existing = await listTargetViaProxy(proxyBase);
+async function patchTargetRecord(baseUrl, token, recordId, payload) {
+  const rid = s(recordId);
+  const ridNum = Number(rid);
+  const idValue = Number.isFinite(ridNum) ? ridNum : rid;
+  const patchObj = { Id: idValue, ...payload };
+  const patchArr = [patchObj];
+
+  const candidates = [
+    { url: `${baseUrl}/${encodeURIComponent(rid)}`, body: JSON.stringify(payload) },
+    { url: baseUrl, body: JSON.stringify(patchObj) },
+    { url: baseUrl, body: JSON.stringify(patchArr) },
+  ];
+
+  let lastErr = "";
+  for (const c of candidates) {
+    try {
+      await fetchJson(c.url, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "xc-token": token,
+          "xc-auth": token,
+          Accept: "application/json",
+        },
+        body: c.body,
+      });
+      return;
+    } catch (e) {
+      lastErr = String(e?.message || e || "");
+    }
+  }
+  throw new Error(`Target update failed recordId=${rid}: ${lastErr}`);
+}
+
+async function syncTargetDirect(env, rows) {
+  const host = s(env.TARGET_NOCO_HOST).replace(/\/+$/, "");
+  const tableId = s(env.TARGET_TABLE_ID);
+  const token = s(env.TARGET_NOCO_TOKEN);
+  if (!host || !tableId || !token) {
+    throw new Error("Missing env: TARGET_NOCO_HOST, TARGET_TABLE_ID, TARGET_NOCO_TOKEN");
+  }
+
+  const base = `${host}/api/v2/tables/${tableId}/records`;
+  const existing = await listTargetDirect(env);
   const rkMap = mapRowKeyToId(existing);
 
   const toCreate = [];
@@ -302,26 +369,20 @@ async function syncTarget(proxyBase, rows) {
 
   for (let i = 0; i < toCreate.length; i += 100) {
     const part = toCreate.slice(i, i + 100).map(buildTargetFields);
-    const u = new URL(proxyBase);
-    u.searchParams.set("mode", "target");
-    u.searchParams.set("action", "create");
-    await fetchJson(u.toString(), {
+    await fetchJson(base, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "xc-token": token,
+        "xc-auth": token,
+        Accept: "application/json",
+      },
       body: JSON.stringify(part),
     });
   }
 
   for (const uo of toUpdate) {
-    const u = new URL(proxyBase);
-    u.searchParams.set("mode", "target");
-    u.searchParams.set("action", "update");
-    u.searchParams.set("recordId", s(uo.recordId));
-    await fetchJson(u.toString(), {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildTargetFields(uo.row)),
-    });
+    await patchTargetRecord(base, token, uo.recordId, buildTargetFields(uo.row));
   }
 
   return { created: toCreate.length, updated: toUpdate.length, existing: existing.length };
@@ -332,10 +393,9 @@ async function runScan(env) {
   const token = s(env.NOCO_TOKEN);
   const sourceTableId = s(env.SOURCE_TABLE_ID);
   const sourceViewId = s(env.SOURCE_VIEW_ID);
-  const proxyBase = s(env.TARGET_PROXY_URL).replace(/\/+$/, "");
 
-  if (!host || !token || !sourceTableId || !proxyBase) {
-    throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID, TARGET_PROXY_URL");
+  if (!host || !token || !sourceTableId) {
+    throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
   const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 3000));
@@ -365,7 +425,7 @@ async function runScan(env) {
   for (const r of rows) dedup.set(norm(r.rowKey), r);
   const finalRows = [...dedup.values()];
 
-  const sync = await syncTarget(proxyBase, finalRows);
+  const sync = await syncTargetDirect(env, finalRows);
 
   return {
     scannedSourceRecords: sourceRecords.length,
