@@ -1,23 +1,28 @@
 name = "form15-auto-scanner-build"
 main = "src/index.js"
 compatibility_date = "2026-04-28"
-[[services]]
-binding = "AUTO_SCANNER"
-service = "form15-auto-scanner-build"
 
+# KV lưu cursor batch scan
 [[kv_namespaces]]
 binding = "SCAN_STATE_KV"
-id = "<KV_ID_cua_namespace>"
+id = "PUT_YOUR_KV_NAMESPACE_ID_HERE"
 
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 SOURCE_TABLE_ID = "mnwnhukgbu8zs9o"
 SOURCE_VIEW_ID = "vwnqck09ijylco3b"
+
 TARGET_NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 TARGET_TABLE_ID = "msc421bfqh1yjne"
 TARGET_PROXY_URL = "https://form15-nocodb-proxy.superaguero1999.workers.dev"
-MAX_SOURCE_RECORDS = "150"
+
+# Batch scan config (đổi trực tiếp trong Worker variables)
+BATCH_SIZE = "100"
 SCAN_CONCURRENCY = "1"
+SCAN_CURSOR_KEY = "form15:auto-scan:cursor:v1"
+
+# Nếu để trống thì scan tất cả sheet
 SCAN_SHEETS = "TCKT,THEM"
+
 NOCO_TOKEN = "G3QREWJrrT_E7QHPfteLJlI90zab7mUW_jNMwZIu"
 TARGET_NOCO_TOKEN = "G3QREWJrrT_E7QHPfteLJlI90zab7mUW_jNMwZIu"
