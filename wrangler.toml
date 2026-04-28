@@ -1,0 +1,3 @@
+name = "form15-auto-scanner"
+main = "src/index.js"
+compatibility_date = "2026-04-28"
