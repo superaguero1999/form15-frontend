@@ -5,6 +5,10 @@ compatibility_date = "2026-04-28"
 binding = "AUTO_SCANNER"
 service = "form15-auto-scanner-build"
 
+[[kv_namespaces]]
+binding = "SCAN_STATE_KV"
+id = "<KV_ID_cua_namespace>"
+
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 SOURCE_TABLE_ID = "mnwnhukgbu8zs9o"
