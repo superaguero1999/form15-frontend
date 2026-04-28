@@ -1,0 +1,9 @@
+{
+  "name": "form15-auto-scanner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}
