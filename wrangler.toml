@@ -1,6 +1,9 @@
 name = "form15-auto-scanner-build"
 main = "src/index.js"
 compatibility_date = "2026-04-28"
+[[services]]
+binding = "AUTO_SCANNER"
+service = "form15-auto-scanner-build"
 
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
