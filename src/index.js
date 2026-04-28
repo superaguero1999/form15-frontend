@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v2-testben-debug-2026-04-28";
+const CODE_VERSION = "scanner-v3-auto-scan-2026-04-29";
 
 export default {
   async fetch(request, env) {
@@ -44,25 +44,35 @@ function norm(v) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
 }
+function truncate(v, max = 180) {
+  const x = s(v);
+  return x.length <= max ? x : x.slice(0, max) + "...";
+}
+function isHttpUrl(v) {
+  try {
+    const u = new URL(s(v));
+    return /^https?:$/i.test(u.protocol);
+  } catch {
+    return false;
+  }
+}
 
 function isTestBen(v) {
   const raw = s(v);
   const x = norm(raw);
-
-  // Match rộng hơn cho các biến thể thực tế
   if (!x) return false;
+
   if (x.includes("testben")) return true;
   if (x.includes("testbendat")) return true;
   if (x.includes("testbenkhongdat")) return true;
   if (x.includes("testbenok")) return true;
   if (x.includes("testbenfail")) return true;
 
-  // fallback theo raw có dấu
   const lowerRaw = raw.toLowerCase();
   if (lowerRaw.includes("test bền")) return true;
-  if (lowerRaw.includes("test-bền")) return true;
-  if (lowerRaw.includes("test ben")) return true;
   if (lowerRaw.includes("test-ben")) return true;
+  if (lowerRaw.includes("test ben")) return true;
+  if (lowerRaw.includes("test-bền")) return true;
 
   return false;
 }
@@ -73,6 +83,57 @@ function pick(obj, keys) {
       const v = obj[k];
       if (v != null && s(v) !== "") return v;
     }
+  }
+  return "";
+}
+
+function pickByNorm(obj, aliases) {
+  if (!obj || typeof obj !== "object") return "";
+  const map = {};
+  for (const k of Object.keys(obj)) map[norm(k)] = k;
+  for (const a of aliases) {
+    const nk = norm(a);
+    if (map[nk]) {
+      const val = obj[map[nk]];
+      if (val != null && s(val) !== "") return val;
+    }
+  }
+  return "";
+}
+
+function findFileUrl(sourceFields) {
+  const direct = pick(sourceFields, [
+    "Link BCexcel",
+    "Link BC Excel",
+    "Link file",
+    "Link File",
+    "File URL",
+    "fileUrl",
+    "URL",
+    "Url",
+    "Link",
+    "Attachment URL",
+    "Drive Link",
+    "Google Drive Link",
+  ]);
+  if (isHttpUrl(direct)) return s(direct);
+
+  const fuzzy = pickByNorm(sourceFields, [
+    "link bcexcel",
+    "link bc excel",
+    "linkfile",
+    "fileurl",
+    "url",
+    "link",
+    "drive link",
+    "google drive link",
+  ]);
+  if (isHttpUrl(fuzzy)) return s(fuzzy);
+
+  // fallback: tìm giá trị đầu tiên trông giống URL
+  for (const k of Object.keys(sourceFields || {})) {
+    const v = sourceFields[k];
+    if (isHttpUrl(v)) return s(v);
   }
   return "";
 }
@@ -114,6 +175,7 @@ async function listNocoRecords({ host, token, tableId, viewId = "", limit = 200,
       method: "GET",
       headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
     });
+
     const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
     out.push(...list);
     if (list.length < limit) break;
@@ -196,15 +258,7 @@ function findHeader(ws, range, aliases) {
 }
 
 function findDanhGiaColumnFallback(ws, range) {
-  const aliases = [
-    "Đánh giá",
-    "Danh gia",
-    "Kết quả",
-    "Ket qua",
-    "Result",
-    "ĐG",
-    "DG",
-  ];
+  const aliases = ["Đánh giá", "Danh gia", "Kết quả", "Ket qua", "Result", "ĐG", "DG"];
   const maxProbe = Math.min(range.e.r, range.s.r + 50);
   for (let r = range.s.r; r <= maxProbe; r += 1) {
     for (let c = range.s.c; c <= range.e.c; c += 1) {
@@ -239,19 +293,28 @@ function extractDisplayRow(ws, rowIdx, headerRow, startCol, endCol) {
   return out;
 }
 
-async function parseOneWorkbook(env, sourceFields, dbg) {
-  const fileUrl = s(pick(sourceFields, ["Link BCexcel", "Link file", "fileUrl"]));
-  if (!fileUrl) {
-    dbg.fileNoUrl += 1;
-    return [];
-  }
+function pushSample(arr, item, limit = 5) {
+  if (arr.length < limit) arr.push(item);
+}
 
+async function parseOneWorkbook(env, sourceFields, dbg) {
+  const fileUrl = findFileUrl(sourceFields);
   const taskCode = s(pick(sourceFields, ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"]));
   const taskName = s(pick(sourceFields, ["Tên tác vụ", "Ten tac vu", "Task name", "Task"]));
   const assignee = s(pick(sourceFields, ["Asignee", "Assignee", "Người phụ trách", "Nguoi phu trach"]));
   const completionActual = s(
     pick(sourceFields, ["Ngày trả báo cáo tức thời", "Ngay tra bao cao tuc thoi", "Ngày hoàn thành thực tế"])
   );
+
+  if (!fileUrl) {
+    dbg.fileNoUrl += 1;
+    pushSample(dbg.sampleNoUrl, {
+      taskCode: truncate(taskCode),
+      taskName: truncate(taskName),
+      keys: Object.keys(sourceFields || {}).slice(0, 12),
+    });
+    return [];
+  }
 
   const ab = await downloadExcel(env, fileUrl);
   const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
@@ -280,15 +343,7 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
     }
 
     const range = XLSX.utils.decode_range(ws["!ref"]);
-    let hi = findHeader(ws, range, [
-      "Đánh giá",
-      "Danh gia",
-      "Kết quả",
-      "Ket qua",
-      "Result",
-      "ĐG",
-      "DG",
-    ]);
+    let hi = findHeader(ws, range, ["Đánh giá", "Danh gia", "Kết quả", "Ket qua", "Result", "ĐG", "DG"]);
 
     if (!hi) {
       const fb = findDanhGiaColumnFallback(ws, range);
@@ -350,7 +405,7 @@ function buildTargetFields(it) {
   return {
     "Mã tác vụ": s(it.taskCode),
     "Tên tác vụ": s(it.taskName),
-    "Asignee": s(it.assignee),
+    Asignee: s(it.assignee),
     "Ngày trả báo cáo tức thời": s(it.completionActual),
     Sheet: s(it.sheetName),
     "Nguồn": s(it.sourceSheetName),
@@ -500,7 +555,7 @@ async function runScan(env) {
     throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
-  const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 300));
+  const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 200));
   const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 1));
 
   const sourceRecords = await listNocoRecords({
@@ -521,13 +576,26 @@ async function runScan(env) {
     fileNoDanhGiaHeader: 0,
     fileNoTestBenRows: 0,
     fileParseError: 0,
+    sampleNoUrl: [],
+    sampleParseErrors: [],
   };
 
   const scanned = await pool(sourceRecords, conc, async (rec) => {
+    const fields = unwrap(rec);
+    const taskCode = s(pick(fields, ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"]));
+    const taskName = s(pick(fields, ["Tên tác vụ", "Ten tac vu", "Task name", "Task"]));
+    const fileUrl = findFileUrl(fields);
+
     try {
-      return await parseOneWorkbook(env, unwrap(rec), dbg);
-    } catch {
+      return await parseOneWorkbook(env, fields, dbg);
+    } catch (e) {
       dbg.fileParseError += 1;
+      pushSample(dbg.sampleParseErrors, {
+        taskCode: truncate(taskCode),
+        taskName: truncate(taskName),
+        fileUrl: truncate(fileUrl),
+        error: truncate(String(e?.message || e || "")),
+      });
       return [];
     }
   });
