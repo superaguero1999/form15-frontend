@@ -5,7 +5,7 @@ compatibility_date = "2026-04-28"
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 SOURCE_TABLE_ID = "mnwnhukgbu8zs9o"
-SOURCE_VIEW_ID = ""
+SOURCE_VIEW_ID = "crku7xup01g0rxx"
 TARGET_NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 TARGET_TABLE_ID = "msc421bfqh1yjne"
 TARGET_PROXY_URL = "https://form15-nocodb-proxy.superaguero1999.workers.dev"
