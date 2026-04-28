@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v3-auto-scan-2026-04-29";
+const CODE_VERSION = "scanner-v5-batch-cursor-2026-04-29";
 
 export default {
   async fetch(request, env) {
@@ -102,6 +102,7 @@ function pickByNorm(obj, aliases) {
 }
 
 function findFileUrl(sourceFields) {
+  // Ưu tiên Link BCexcel
   const direct = pick(sourceFields, [
     "Link BCexcel",
     "Link BC Excel",
@@ -130,7 +131,6 @@ function findFileUrl(sourceFields) {
   ]);
   if (isHttpUrl(fuzzy)) return s(fuzzy);
 
-  // fallback: tìm giá trị đầu tiên trông giống URL
   for (const k of Object.keys(sourceFields || {})) {
     const v = sourceFields[k];
     if (isHttpUrl(v)) return s(v);
@@ -161,40 +161,57 @@ async function fetchJson(url, options = {}) {
   }
 }
 
-async function listNocoRecords({ host, token, tableId, viewId = "", limit = 200, max = 5000 }) {
-  const out = [];
-  let offset = 0;
-  while (out.length < max) {
-    const u = new URL(`${host}/api/v2/tables/${tableId}/records`);
-    u.searchParams.set("offset", String(offset));
-    u.searchParams.set("limit", String(limit));
-    u.searchParams.set("where", "");
-    if (viewId) u.searchParams.set("viewId", viewId);
+async function listNocoBatch({ host, token, tableId, viewId = "", offset = 0, limit = 20 }) {
+  const u = new URL(`${host}/api/v2/tables/${tableId}/records`);
+  u.searchParams.set("offset", String(Math.max(0, n(offset))));
+  u.searchParams.set("limit", String(Math.max(1, n(limit))));
+  u.searchParams.set("where", "");
+  u.searchParams.set("sort", "Id");
+  if (viewId) u.searchParams.set("viewId", viewId);
 
-    const data = await fetchJson(u.toString(), {
-      method: "GET",
-      headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
-    });
+  const data = await fetchJson(u.toString(), {
+    method: "GET",
+    headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
+  });
 
-    const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
-    out.push(...list);
-    if (list.length < limit) break;
-    offset += limit;
-  }
-  return out.slice(0, max);
+  return Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
+}
+
+async function getCursor(env) {
+  if (!env.SCAN_STATE_KV) throw new Error("Missing KV binding: SCAN_STATE_KV");
+  const key = s(env.SCAN_CURSOR_KEY || "form15:auto-scan:cursor:v1");
+  const raw = await env.SCAN_STATE_KV.get(key);
+  const cur = n(raw);
+  return cur > 0 ? cur : 0;
+}
+
+async function setCursor(env, value) {
+  if (!env.SCAN_STATE_KV) throw new Error("Missing KV binding: SCAN_STATE_KV");
+  const key = s(env.SCAN_CURSOR_KEY || "form15:auto-scan:cursor:v1");
+  await env.SCAN_STATE_KV.put(key, String(Math.max(0, n(value))));
 }
 
 function driveCandidates(rawUrl) {
   const out = [rawUrl];
   try {
     const u = new URL(rawUrl);
-    if (!/drive\.google\.com$/i.test(u.hostname)) return out;
-    const id = u.searchParams.get("id");
-    if (id) {
-      out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
-      out.push(`https://docs.google.com/uc?export=download&id=${encodeURIComponent(id)}`);
+
+    // Google Drive id=...
+    if (/drive\.google\.com$/i.test(u.hostname)) {
+      const id = u.searchParams.get("id");
+      if (id) {
+        out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
+        out.push(`https://docs.google.com/uc?export=download&id=${encodeURIComponent(id)}`);
+      }
+    }
+
+    // Google Sheets /edit => /export?format=xlsx
+    if (/docs\.google\.com$/i.test(u.hostname) && u.pathname.includes("/spreadsheets/d/")) {
+      const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
+      if (m && m[1]) out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
     }
   } catch {}
+
   return [...new Set(out)];
 }
 
@@ -252,7 +269,7 @@ function findHeader(ws, range, aliases) {
         break;
       }
     }
-    if (idx >= 0) return { headerRow: r, danhGiaCol: range.s.c + idx, headers };
+    if (idx >= 0) return { headerRow: r, danhGiaCol: range.s.c + idx };
   }
   return null;
 }
@@ -263,9 +280,7 @@ function findDanhGiaColumnFallback(ws, range) {
   for (let r = range.s.r; r <= maxProbe; r += 1) {
     for (let c = range.s.c; c <= range.e.c; c += 1) {
       const txt = cellText(ws, r, c);
-      if (headerMatches(txt, aliases)) {
-        return { headerRow: r, danhGiaCol: c };
-      }
+      if (headerMatches(txt, aliases)) return { headerRow: r, danhGiaCol: c };
     }
   }
   return null;
@@ -319,10 +334,10 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
   const ab = await downloadExcel(env, fileUrl);
   const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
 
-  const allowedSheets = s(env.SCAN_SHEETS || "TCKT,THEM")
-    .split(",")
-    .map((x) => norm(x))
-    .filter(Boolean);
+  const sheetCfg = s(env.SCAN_SHEETS);
+  const allowedSheets = sheetCfg
+    ? sheetCfg.split(",").map((x) => norm(x)).filter(Boolean)
+    : [];
 
   const rows = [];
   let anySheetMatched = false;
@@ -330,7 +345,7 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
   let anyTestBenFound = false;
 
   for (const sn of wb.SheetNames || []) {
-    if (!allowedSheets.includes(norm(sn))) {
+    if (allowedSheets.length > 0 && !allowedSheets.includes(norm(sn))) {
       dbg.sheetSkippedByName += 1;
       continue;
     }
@@ -344,12 +359,10 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
 
     const range = XLSX.utils.decode_range(ws["!ref"]);
     let hi = findHeader(ws, range, ["Đánh giá", "Danh gia", "Kết quả", "Ket qua", "Result", "ĐG", "DG"]);
-
     if (!hi) {
       const fb = findDanhGiaColumnFallback(ws, range);
-      if (fb) hi = { headerRow: fb.headerRow, danhGiaCol: fb.danhGiaCol, headers: [] };
+      if (fb) hi = fb;
     }
-
     if (!hi) {
       dbg.sheetNoHeader += 1;
       continue;
@@ -555,17 +568,30 @@ async function runScan(env) {
     throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
-  const maxRecords = Math.max(1, n(env.MAX_SOURCE_RECORDS || 200));
+  const batchSize = Math.max(1, n(env.BATCH_SIZE || 20));
   const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 1));
 
-  const sourceRecords = await listNocoRecords({
+  let cursor = await getCursor(env);
+  let sourceRecords = await listNocoBatch({
     host,
     token,
     tableId: sourceTableId,
     viewId: sourceViewId,
-    limit: 200,
-    max: maxRecords,
+    offset: cursor,
+    limit: batchSize,
   });
+
+  if (!sourceRecords.length && cursor > 0) {
+    cursor = 0;
+    sourceRecords = await listNocoBatch({
+      host,
+      token,
+      tableId: sourceTableId,
+      viewId: sourceViewId,
+      offset: 0,
+      limit: batchSize,
+    });
+  }
 
   const dbg = {
     fileNoUrl: 0,
@@ -607,7 +633,14 @@ async function runScan(env) {
 
   const sync = await syncTargetDirect(env, finalRows);
 
+  let nextCursor = cursor + sourceRecords.length;
+  if (sourceRecords.length < batchSize) nextCursor = 0;
+  await setCursor(env, nextCursor);
+
   return {
+    batchSize,
+    cursorStart: cursor,
+    cursorNext: nextCursor,
     scannedSourceRecords: sourceRecords.length,
     excelFilesErrorTotal: dbg.fileParseError,
     rowsMatchedTestBen: rows.length,
