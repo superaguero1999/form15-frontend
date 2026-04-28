@@ -4,7 +4,7 @@ compatibility_date = "2026-04-28"
 
 [vars]
 NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
-SOURCE_TABLE_ID = "vwnqck09ijylco3b"
+SOURCE_TABLE_ID = "/mnwnhukgbu8zs9o"
 SOURCE_VIEW_ID = ""
 TARGET_NOCO_HOST = "https://iatzhxxuk.tino.page/nocodb"
 TARGET_TABLE_ID = "msc421bfqh1yjne"
