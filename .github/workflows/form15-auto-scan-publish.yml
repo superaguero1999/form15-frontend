@@ -1,0 +1,37 @@
+name: Form15 Auto Scan + Publish
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"   # 07:00 ICT
+    - cron: "30 5 * * *"  # 12:30 ICT
+
+jobs:
+  scan_publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: |
+          npm init -y
+          npm install xlsx
+
+      - name: Run scan + sync + publish
+        env:
+          NOCO_HOST: ${{ secrets.NOCO_HOST }}
+          NOCO_TOKEN: ${{ secrets.NOCO_TOKEN }}
+          SOURCE_TABLE_ID: ${{ secrets.SOURCE_TABLE_ID }}
+          SOURCE_VIEW_ID: ${{ secrets.SOURCE_VIEW_ID }}
+          WORKER_BASE_URL: ${{ secrets.WORKER_BASE_URL }}
+          MAX_SOURCE_RECORDS: ${{ secrets.MAX_SOURCE_RECORDS }}
+          SCAN_CONCURRENCY: ${{ secrets.SCAN_CONCURRENCY }}
+        run: node .github/scripts/form15-auto-scan-publish.mjs
