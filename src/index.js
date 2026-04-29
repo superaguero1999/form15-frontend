@@ -216,47 +216,94 @@ async function setSourceState(env, recordId, updatedAt) {
   if (!env.SCAN_STATE_KV) return;
   await env.SCAN_STATE_KV.put(srcStateKey(recordId), s(updatedAt));
 }
-
 function driveCandidates(rawUrl) {
-  const out = [rawUrl];
+  const out = [];
   try {
     const u = new URL(rawUrl);
+    const src = u.toString();
 
+    // Ưu tiên link gốc trước
+    out.push(src);
+
+    // drive.google.com/uc?id=...
     if (/drive\.google\.com$/i.test(u.hostname)) {
       const id = u.searchParams.get("id");
-      if (id) out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
+      if (id) {
+        out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
+      }
     }
 
+    // docs.google.com/spreadsheets/d/<id>/edit -> export xlsx
     if (/docs\.google\.com$/i.test(u.hostname) && u.pathname.includes("/spreadsheets/d/")) {
       const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
-      if (m && m[1]) out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
+      if (m && m[1]) {
+        out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
+      }
     }
-  } catch {}
+  } catch {
+    // fallback giữ link thô
+    out.push(String(rawUrl || ""));
+  }
 
-  return [...new Set(out)];
+  // Giới hạn tối đa 2 candidates để tránh tốn subrequest
+  return [...new Set(out)].filter(Boolean).slice(0, 2);
 }
 
 async function downloadExcel(_env, fileUrl) {
+  const MAX_BYTES = 15 * 1024 * 1024; // 15MB
+  const TIMEOUT_MS = 15000; // 15s
   const candidates = driveCandidates(fileUrl);
+
   let lastErr = "";
 
   for (const c of candidates) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort("DOWNLOAD_TIMEOUT"), TIMEOUT_MS);
+
     try {
       const r = await fetch(c, {
         method: "GET",
         redirect: "follow",
+        signal: ctrl.signal,
         headers: {
           "User-Agent": "Mozilla/5.0",
           Accept: "*/*",
         },
       });
+
       if (!r.ok) {
         lastErr = `direct HTTP ${r.status} ${c}`;
         continue;
       }
-      return await r.arrayBuffer();
+
+      const len = Number(r.headers.get("content-length") || "0");
+      if (Number.isFinite(len) && len > MAX_BYTES) {
+        throw new Error(`FILE_TOO_LARGE content-length=${len}`);
+      }
+
+      const ab = await r.arrayBuffer();
+      if (ab.byteLength > MAX_BYTES) {
+        throw new Error(`FILE_TOO_LARGE body=${ab.byteLength}`);
+      }
+
+      // Check nhanh magic header để tránh parse linh tinh
+      const head = new Uint8Array(ab.slice(0, 4));
+      const isZip = head[0] === 0x50 && head[1] === 0x4b; // PK..
+      const isOle = head[0] === 0xd0 && head[1] === 0xcf; // xls cũ
+      if (!isZip && !isOle) {
+        throw new Error("NOT_EXCEL_BINARY");
+      }
+
+      return ab;
     } catch (e) {
-      lastErr = `direct ${String(e?.message || e || "")}`;
+      const msg = String(e?.message || e || "");
+      if (msg.includes("DOWNLOAD_TIMEOUT")) {
+        lastErr = `direct TIMEOUT ${c}`;
+      } else {
+        lastErr = `direct ${msg}`;
+      }
+    } finally {
+      clearTimeout(t);
     }
   }
 
