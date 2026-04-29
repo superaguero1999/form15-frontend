@@ -216,6 +216,7 @@ async function setSourceState(env, recordId, updatedAt) {
   if (!env.SCAN_STATE_KV) return;
   await env.SCAN_STATE_KV.put(srcStateKey(recordId), s(updatedAt));
 }
+
 function driveCandidates(rawUrl) {
   const out = [];
   try {
@@ -245,7 +246,7 @@ function driveCandidates(rawUrl) {
     out.push(String(rawUrl || ""));
   }
 
-  // Giới hạn tối đa 2 candidates để tránh tốn subrequest
+  // Giới hạn tối đa 2 candidates để tránh tốn tốn request
   return [...new Set(out)].filter(Boolean).slice(0, 2);
 }
 
@@ -359,17 +360,50 @@ function findDanhGiaColumnFallback(ws, range) {
   return null;
 }
 
-function extractDisplayRow(ws, rowIdx, headerRow, startCol, endCol) {
+/**
+ * TỐI ƯU CPU:
+ * - extractDisplayRow cũ sẽ build colMap (quét startCol..endCol) cho MỖI dòng "Test bền".
+ * - code mới precompute mapping cột cần lấy cho 1 sheet (1 lần),
+ *   sau đó mỗi dòng chỉ đọc đúng các cột đó.
+ */
+const WANTED_DISPLAY_KEYS = [
+  "STT",
+  "Công chuẩn",
+  "Mã danh mục",
+  "Hạng mục kiểm tra (Index)",
+  "Tiêu chuẩn (Standard)",
+  "Công cụ (Tool)",
+  "Hướng dẫn / Phương pháp (Document)",
+];
+
+function buildWantedCols(ws, headerRow, startCol, endCol) {
+  const headerNormToCol = {};
+  for (let c = startCol; c <= endCol; c += 1) {
+    const h = norm(cellText(ws, headerRow, c));
+    if (h) headerNormToCol[h] = c;
+  }
+
+  const wantedCols = {};
+  for (const key of WANTED_DISPLAY_KEYS) {
+    const col = headerNormToCol[norm(key)];
+    wantedCols[key] = Number.isInteger(col) ? col : null;
+  }
+  return wantedCols;
+}
+
+function buildRowDataFromWantedCols(ws, rowIdx, wantedCols) {
   const out = {};
-  const wanted = [
-    "STT",
-    "Công chuẩn",
-    "Mã danh mục",
-    "Hạng mục kiểm tra (Index)",
-    "Tiêu chuẩn (Standard)",
-    "Công cụ (Tool)",
-    "Hướng dẫn / Phương pháp (Document)",
-  ];
+  for (const key of WANTED_DISPLAY_KEYS) {
+    const col = wantedCols[key];
+    out[key] = col != null ? cellText(ws, rowIdx, col) : "";
+  }
+  return out;
+}
+
+function extractDisplayRow(ws, rowIdx, headerRow, startCol, endCol) {
+  // giữ lại hàm cũ nếu bạn cần fallback; nhưng parse mới sẽ dùng buildWantedCols/buildRowDataFromWantedCols
+  const out = {};
+  const wanted = WANTED_DISPLAY_KEYS;
   const colMap = {};
   for (let c = startCol; c <= endCol; c += 1) {
     colMap[norm(cellText(ws, headerRow, c))] = c;
@@ -441,12 +475,16 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
 
     anyHeaderFound = true;
 
+    // PRECOMPUTE cột cho rowData: chỉ làm 1 lần/sheet
+    const wantedCols = buildWantedCols(ws, hi.headerRow, range.s.c, range.e.c);
+
     for (let r = hi.headerRow + 1; r <= range.e.r; r += 1) {
       const danhGia = cellText(ws, r, hi.danhGiaCol);
       if (!isTestBen(danhGia)) continue;
 
       anyTestBenFound = true;
       const excelRowIndex = r + 1;
+
       rows.push({
         rowKey: rowKey(taskCode, sn, excelRowIndex, fileUrl),
         taskCode,
@@ -458,7 +496,7 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
         fileUrl,
         excelRowIndex,
         danhGiaValue: danhGia,
-        rowData: extractDisplayRow(ws, r, hi.headerRow, range.s.c, range.e.c),
+        rowData: buildRowDataFromWantedCols(ws, r, wantedCols),
       });
     }
   }
