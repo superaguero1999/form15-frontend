@@ -17,7 +17,7 @@ TARGET_TABLE_ID = "msc421bfqh1yjne"
 TARGET_PROXY_URL = "https://form15-nocodb-proxy.superaguero1999.workers.dev"
 
 # Batch scan config (đổi trực tiếp trong Worker variables)
-BATCH_SIZE = "30"
+BATCH_SIZE = "20"
 SCAN_CONCURRENCY = "1"
 SCAN_CURSOR_KEY = "form15:auto-scan:cursor:v1"
 
