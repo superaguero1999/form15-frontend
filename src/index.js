@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v7-incremental-2026-04-29";
+const CODE_VERSION = "scanner-v7.2-direct-only-2026-04-29";
 
 export default {
   async fetch(request, env) {
@@ -24,7 +24,7 @@ export default {
 
     try {
       const result = await runScan(env);
-      return json({ ok: true, version: CODE_VERSION, ...result }, 200, cors);
+      return json({ ok: true, version: CODE_VERSION, downloadMode: "direct_only", ...result }, 200, cors);
     } catch (e) {
       return json({ ok: false, version: CODE_VERSION, error: String(e?.message || e || "") }, 500, cors);
     }
@@ -222,15 +222,11 @@ function driveCandidates(rawUrl) {
   try {
     const u = new URL(rawUrl);
 
-    // drive.google.com/uc?id=...&export=download
     if (/drive\.google\.com$/i.test(u.hostname)) {
       const id = u.searchParams.get("id");
-      if (id) {
-        out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
-      }
+      if (id) out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
     }
 
-    // docs.google.com/spreadsheets/d/<id>/edit -> export xlsx
     if (/docs\.google\.com$/i.test(u.hostname) && u.pathname.includes("/spreadsheets/d/")) {
       const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
       if (m && m[1]) out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
@@ -240,12 +236,10 @@ function driveCandidates(rawUrl) {
   return [...new Set(out)];
 }
 
-async function downloadExcel(env, fileUrl) {
+async function downloadExcel(_env, fileUrl) {
   const candidates = driveCandidates(fileUrl);
-  const proxy = s(env.TARGET_PROXY_URL).replace(/\/+$/, "");
   let lastErr = "";
 
-  // 1) Ưu tiên tải trực tiếp từ Worker B
   for (const c of candidates) {
     try {
       const r = await fetch(c, {
@@ -266,27 +260,8 @@ async function downloadExcel(env, fileUrl) {
     }
   }
 
-  // 2) Fallback qua proxy nếu direct fail hết
-  if (proxy) {
-    for (const c of candidates) {
-      const url = `${proxy}?fileUrl=${encodeURIComponent(c)}`;
-      try {
-        const r = await fetch(url, { method: "GET", redirect: "follow" });
-        if (!r.ok) {
-          lastErr = `proxy HTTP ${r.status} ${url}`;
-          continue;
-        }
-        return await r.arrayBuffer();
-      } catch (e) {
-        lastErr = `proxy ${String(e?.message || e || "")}`;
-      }
-    }
-  }
-
   throw new Error("Cannot download excel: " + lastErr);
 }
-
-
 
 function cellText(ws, r, c) {
   const cell = ws[XLSX.utils.encode_cell({ r, c })];
@@ -632,7 +607,7 @@ async function runScan(env) {
     throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
-  const batchSize = Math.max(1, n(env.BATCH_SIZE || 5));
+  const batchSize = Math.max(1, n(env.BATCH_SIZE || 20));
   const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 1));
 
   let cursor = await getCursor(env);
