@@ -23,6 +23,8 @@ SCAN_CURSOR_KEY = "form15:auto-scan:cursor:v1"
 
 # Nếu để trống thì scan tất cả sheet
 SCAN_SHEETS = "TCKT,THEM"
+SCAN_ROWKEY_CACHE_PREFIX = "rk:"
 
 NOCO_TOKEN = "G3QREWJrrT_E7QHPfteLJlI90zab7mUW_jNMwZIu"
 TARGET_NOCO_TOKEN = "G3QREWJrrT_E7QHPfteLJlI90zab7mUW_jNMwZIu"
+
