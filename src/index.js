@@ -250,19 +250,20 @@ function driveCandidates(rawUrl) {
   return [...new Set(out)].filter(Boolean).slice(0, 2);
 }
 
-async function downloadExcel(_env, fileUrl) {
-  const MAX_BYTES = 8 * 1024 * 1024; // 15MB
-  const TIMEOUT_MS = 15000; // 15s
-  const candidates = driveCandidates(fileUrl);
+async function downloadExcel(env, fileUrl) {
+  const MAX_MB = Math.max(1, n(env.MAX_EXCEL_MB || 5)); // tăng/giảm trong env
+  const MAX_BYTES = MAX_MB * 1024 * 1024;
+  const TIMEOUT_MS = Math.max(5000, n(env.DOWNLOAD_TIMEOUT_MS || 15000));
 
+  const candidates = driveCandidates(fileUrl);
   let lastErr = "";
 
-  for (const c of candidates) {
+  async function fetchWithLimit(url) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort("DOWNLOAD_TIMEOUT"), TIMEOUT_MS);
 
     try {
-      const r = await fetch(c, {
+      const r = await fetch(url, {
         method: "GET",
         redirect: "follow",
         signal: ctrl.signal,
@@ -272,39 +273,61 @@ async function downloadExcel(_env, fileUrl) {
         },
       });
 
-      if (!r.ok) {
-        lastErr = `direct HTTP ${r.status} ${c}`;
-        continue;
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+      // nếu không có body (hiếm), fallback arrayBuffer rồi kiểm kích thước
+      if (!r.body) {
+        const ab = await r.arrayBuffer();
+        if (ab.byteLength > MAX_BYTES) throw new Error(`FILE_TOO_LARGE body=${ab.byteLength}`);
+        return ab;
       }
 
-      const len = Number(r.headers.get("content-length") || "0");
-      if (Number.isFinite(len) && len > MAX_BYTES) {
-        throw new Error(`FILE_TOO_LARGE content-length=${len}`);
+      const reader = r.body.getReader();
+      let received = 0;
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          received += value.byteLength;
+          if (received > MAX_BYTES) {
+            ctrl.abort("FILE_TOO_LARGE");
+            throw new Error(`FILE_TOO_LARGE received>${MAX_BYTES}`);
+          }
+          chunks.push(value);
+        }
       }
 
-      const ab = await r.arrayBuffer();
-      if (ab.byteLength > MAX_BYTES) {
-        throw new Error(`FILE_TOO_LARGE body=${ab.byteLength}`);
+      const ab = new Uint8Array(received);
+      let off = 0;
+      for (const ch of chunks) {
+        ab.set(ch, off);
+        off += ch.byteLength;
       }
 
-      // Check nhanh magic header để tránh parse linh tinh
-      const head = new Uint8Array(ab.slice(0, 4));
+      // Early reject HTML (nếu Drive trả HTML lỗi)
+      const headTxt = new TextDecoder("utf-8").decode(ab.slice(0, 64));
+      if (headTxt.includes("<!DOCTYPE html") || headTxt.toLowerCase().includes("<html")) {
+        throw new Error("NOT_EXCEL_HTML");
+      }
+
+      // Magic header kiểm tra nhanh
+      const head = ab.slice(0, 4);
       const isZip = head[0] === 0x50 && head[1] === 0x4b; // PK..
       const isOle = head[0] === 0xd0 && head[1] === 0xcf; // xls cũ
-      if (!isZip && !isOle) {
-        throw new Error("NOT_EXCEL_BINARY");
-      }
+      if (!isZip && !isOle) throw new Error("NOT_EXCEL_BINARY");
 
-      return ab;
-    } catch (e) {
-      const msg = String(e?.message || e || "");
-      if (msg.includes("DOWNLOAD_TIMEOUT")) {
-        lastErr = `direct TIMEOUT ${c}`;
-      } else {
-        lastErr = `direct ${msg}`;
-      }
+      return ab.buffer;
     } finally {
       clearTimeout(t);
+    }
+  }
+
+  for (const c of candidates) {
+    try {
+      return await fetchWithLimit(c);
+    } catch (e) {
+      lastErr = `${String(e?.message || e || "")} @ ${c}`;
     }
   }
 
