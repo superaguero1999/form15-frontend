@@ -773,7 +773,33 @@ async function runScan(env) {
   for (const r of rows) dedup.set(norm(r.rowKey), r);
   const finalRows = [...dedup.values()];
 
-  const sync = await syncTargetDirect(env, finalRows);
+const skipSync = String(env.DEBUG_SKIP_SYNC || "").toLowerCase() === "1";
+
+let sync = { created: 0, updated: 0, cacheHit: 0, cacheMiss: 0, lookupHit: 0 };
+if (!skipSync) {
+  sync = await syncTargetDirect(env, finalRows);
+}
+
+return {
+  batchSize,
+  cursorStart: cursor,
+  cursorNext: nextCursor,
+  scannedSourceRecords: sourceRecords.length,
+  skippedUnchanged,
+  processedChanged,
+  excelFilesErrorTotal: dbg.fileParseError,
+  rowsMatchedTestBen: rows.length,
+  rowsAfterDedup: finalRows.length,
+
+  targetCreated: sync.created,
+  targetUpdated: sync.updated,
+  cacheHit: sync.cacheHit,
+  cacheMiss: sync.cacheMiss,
+  lookupHit: sync.lookupHit,
+
+  skipSync,
+  debug: dbg,
+};
 
   let nextCursor = cursor + sourceRecords.length;
   if (sourceRecords.length < batchSize) nextCursor = 0;
