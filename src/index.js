@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v6-cache-rowkey-2026-04-29";
+const CODE_VERSION = "scanner-v7-incremental-2026-04-29";
 
 export default {
   async fetch(request, env) {
@@ -55,6 +55,9 @@ function isHttpUrl(v) {
   } catch {
     return false;
   }
+}
+function srcStateKey(recordId) {
+  return `src:${s(recordId)}`;
 }
 
 function isTestBen(v) {
@@ -202,6 +205,16 @@ async function getCachedTargetId(env, rowKeyValue) {
 async function setCachedTargetId(env, rowKeyValue, recordId) {
   if (!env.SCAN_STATE_KV) return;
   await env.SCAN_STATE_KV.put(rkCacheKey(env, rowKeyValue), s(recordId));
+}
+
+async function getSourceState(env, recordId) {
+  if (!env.SCAN_STATE_KV) return "";
+  return s(await env.SCAN_STATE_KV.get(srcStateKey(recordId)));
+}
+
+async function setSourceState(env, recordId, updatedAt) {
+  if (!env.SCAN_STATE_KV) return;
+  await env.SCAN_STATE_KV.put(srcStateKey(recordId), s(updatedAt));
 }
 
 function driveCandidates(rawUrl) {
@@ -524,7 +537,6 @@ async function createTargetRecord(baseUrl, token, payload) {
     body: JSON.stringify(payload),
   });
 
-  // NocoDB có thể trả object hoặc array
   if (Array.isArray(data) && data[0]) {
     const rec = data[0];
     const f = unwrap(rec);
@@ -552,7 +564,6 @@ async function syncTargetDirect(env, rows) {
 
     const payload = buildTargetFields(it);
 
-    // 1) cache
     let rid = await getCachedTargetId(env, rk);
     if (rid) {
       cacheHit += 1;
@@ -561,14 +572,12 @@ async function syncTargetDirect(env, rows) {
         updated += 1;
         continue;
       } catch {
-        // id stale -> clear and fallback lookup
         rid = "";
       }
     } else {
       cacheMiss += 1;
     }
 
-    // 2) lookup by rowKey
     rid = await findTargetIdByRowKey(env, rk);
     if (rid) {
       lookupHit += 1;
@@ -578,7 +587,6 @@ async function syncTargetDirect(env, rows) {
       continue;
     }
 
-    // 3) create
     const newId = await createTargetRecord(base, token, payload);
     if (newId) await setCachedTargetId(env, rk, newId);
     created += 1;
@@ -635,14 +643,32 @@ async function runScan(env) {
     sampleParseErrors: [],
   };
 
+  let skippedUnchanged = 0;
+  let processedChanged = 0;
+
   const scanned = await pool(sourceRecords, conc, async (rec) => {
     const fields = unwrap(rec);
+
+    const recId = s(rec?.Id ?? rec?.id ?? rec?._id ?? fields?.Id ?? fields?.id);
+    const updatedAt = s(rec?.UpdatedAt ?? fields?.UpdatedAt ?? rec?.updatedAt ?? fields?.updatedAt);
+
+    if (recId && updatedAt) {
+      const prev = await getSourceState(env, recId);
+      if (prev && prev === updatedAt) {
+        skippedUnchanged += 1;
+        return [];
+      }
+    }
+
     const taskCode = s(pick(fields, ["Mã tác vụ", "Ma tac vu", "Task code", "Task ID"]));
     const taskName = s(pick(fields, ["Tên tác vụ", "Ten tac vu", "Task name", "Task"]));
     const fileUrl = findFileUrl(fields);
 
     try {
-      return await parseOneWorkbook(env, fields, dbg);
+      const rows = await parseOneWorkbook(env, fields, dbg);
+      if (recId && updatedAt) await setSourceState(env, recId, updatedAt);
+      processedChanged += 1;
+      return rows;
     } catch (e) {
       dbg.fileParseError += 1;
       pushSample(dbg.sampleParseErrors, {
@@ -671,6 +697,8 @@ async function runScan(env) {
     cursorStart: cursor,
     cursorNext: nextCursor,
     scannedSourceRecords: sourceRecords.length,
+    skippedUnchanged,
+    processedChanged,
     excelFilesErrorTotal: dbg.fileParseError,
     rowsMatchedTestBen: rows.length,
     rowsAfterDedup: finalRows.length,
