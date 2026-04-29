@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v5-batch-cursor-2026-04-29";
+const CODE_VERSION = "scanner-v6-cache-rowkey-2026-04-29";
 
 export default {
   async fetch(request, env) {
@@ -61,7 +61,6 @@ function isTestBen(v) {
   const raw = s(v);
   const x = norm(raw);
   if (!x) return false;
-
   if (x.includes("testben")) return true;
   if (x.includes("testbendat")) return true;
   if (x.includes("testbenkhongdat")) return true;
@@ -73,7 +72,6 @@ function isTestBen(v) {
   if (lowerRaw.includes("test-ben")) return true;
   if (lowerRaw.includes("test ben")) return true;
   if (lowerRaw.includes("test-bền")) return true;
-
   return false;
 }
 
@@ -102,7 +100,6 @@ function pickByNorm(obj, aliases) {
 }
 
 function findFileUrl(sourceFields) {
-  // Ưu tiên Link BCexcel
   const direct = pick(sourceFields, [
     "Link BCexcel",
     "Link BC Excel",
@@ -191,12 +188,27 @@ async function setCursor(env, value) {
   await env.SCAN_STATE_KV.put(key, String(Math.max(0, n(value))));
 }
 
+function rkCacheKey(env, rowKeyValue) {
+  const p = s(env.SCAN_ROWKEY_CACHE_PREFIX || "rk:");
+  return `${p}${norm(rowKeyValue)}`;
+}
+
+async function getCachedTargetId(env, rowKeyValue) {
+  if (!env.SCAN_STATE_KV) return "";
+  const val = await env.SCAN_STATE_KV.get(rkCacheKey(env, rowKeyValue));
+  return s(val);
+}
+
+async function setCachedTargetId(env, rowKeyValue, recordId) {
+  if (!env.SCAN_STATE_KV) return;
+  await env.SCAN_STATE_KV.put(rkCacheKey(env, rowKeyValue), s(recordId));
+}
+
 function driveCandidates(rawUrl) {
   const out = [rawUrl];
   try {
     const u = new URL(rawUrl);
 
-    // Google Drive id=...
     if (/drive\.google\.com$/i.test(u.hostname)) {
       const id = u.searchParams.get("id");
       if (id) {
@@ -205,7 +217,6 @@ function driveCandidates(rawUrl) {
       }
     }
 
-    // Google Sheets /edit => /export?format=xlsx
     if (/docs\.google\.com$/i.test(u.hostname) && u.pathname.includes("/spreadsheets/d/")) {
       const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
       if (m && m[1]) out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
@@ -335,9 +346,7 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
   const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
 
   const sheetCfg = s(env.SCAN_SHEETS);
-  const allowedSheets = sheetCfg
-    ? sheetCfg.split(",").map((x) => norm(x)).filter(Boolean)
-    : [];
+  const allowedSheets = sheetCfg ? sheetCfg.split(",").map((x) => norm(x)).filter(Boolean) : [];
 
   const rows = [];
   let anySheetMatched = false;
@@ -376,7 +385,6 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
 
       anyTestBenFound = true;
       const excelRowIndex = r + 1;
-
       rows.push({
         rowKey: rowKey(taskCode, sn, excelRowIndex, fileUrl),
         taskCode,
@@ -440,47 +448,34 @@ function buildTargetFields(it) {
   };
 }
 
-async function listTargetDirect(env) {
+function targetBase(env) {
   const host = s(env.TARGET_NOCO_HOST).replace(/\/+$/, "");
   const tableId = s(env.TARGET_TABLE_ID);
   const token = s(env.TARGET_NOCO_TOKEN);
   if (!host || !tableId || !token) {
     throw new Error("Missing env: TARGET_NOCO_HOST, TARGET_TABLE_ID, TARGET_NOCO_TOKEN");
   }
-
-  const out = [];
-  let offset = 0;
-  const limit = 200;
-
-  while (true) {
-    const u = new URL(`${host}/api/v2/tables/${tableId}/records`);
-    u.searchParams.set("offset", String(offset));
-    u.searchParams.set("limit", String(limit));
-    u.searchParams.set("where", "");
-
-    const data = await fetchJson(u.toString(), {
-      method: "GET",
-      headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
-    });
-
-    const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
-    out.push(...list);
-    if (list.length < limit) break;
-    offset += limit;
-  }
-
-  return out;
+  return { base: `${host}/api/v2/tables/${tableId}/records`, token };
 }
 
-function mapRowKeyToId(targetRows) {
-  const m = {};
-  for (const rec of targetRows) {
-    const f = unwrap(rec);
-    const id = s(rec?.Id ?? rec?.id ?? rec?._id ?? f?.Id ?? f?.id);
-    const rk = s(f.rowKey);
-    if (id && rk) m[norm(rk)] = id;
-  }
-  return m;
+async function findTargetIdByRowKey(env, rowKeyValue) {
+  const { base, token } = targetBase(env);
+  const rk = s(rowKeyValue).replace(/'/g, "\\'");
+  const u = new URL(base);
+  u.searchParams.set("limit", "1");
+  u.searchParams.set("offset", "0");
+  u.searchParams.set("where", `(rowKey,eq,${rk})`);
+
+  const data = await fetchJson(u.toString(), {
+    method: "GET",
+    headers: { "xc-token": token, "xc-auth": token, Accept: "application/json" },
+  });
+
+  const list = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
+  if (!list.length) return "";
+  const rec = list[0];
+  const f = unwrap(rec);
+  return s(rec?.Id ?? rec?.id ?? rec?._id ?? f?.Id ?? f?.id);
 }
 
 async function patchTargetRecord(baseUrl, token, recordId, payload) {
@@ -517,45 +512,79 @@ async function patchTargetRecord(baseUrl, token, recordId, payload) {
   throw new Error(`Target update failed recordId=${rid}: ${lastErr}`);
 }
 
+async function createTargetRecord(baseUrl, token, payload) {
+  const data = await fetchJson(baseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "xc-token": token,
+      "xc-auth": token,
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  // NocoDB có thể trả object hoặc array
+  if (Array.isArray(data) && data[0]) {
+    const rec = data[0];
+    const f = unwrap(rec);
+    return s(rec?.Id ?? rec?.id ?? rec?._id ?? f?.Id ?? f?.id);
+  }
+  if (data && typeof data === "object") {
+    const f = unwrap(data);
+    return s(data?.Id ?? data?.id ?? data?._id ?? f?.Id ?? f?.id);
+  }
+  return "";
+}
+
 async function syncTargetDirect(env, rows) {
-  const host = s(env.TARGET_NOCO_HOST).replace(/\/+$/, "");
-  const tableId = s(env.TARGET_TABLE_ID);
-  const token = s(env.TARGET_NOCO_TOKEN);
-  if (!host || !tableId || !token) {
-    throw new Error("Missing env: TARGET_NOCO_HOST, TARGET_TABLE_ID, TARGET_NOCO_TOKEN");
-  }
+  const { base, token } = targetBase(env);
 
-  const base = `${host}/api/v2/tables/${tableId}/records`;
-  const existing = await listTargetDirect(env);
-  const rkMap = mapRowKeyToId(existing);
+  let created = 0;
+  let updated = 0;
+  let cacheHit = 0;
+  let cacheMiss = 0;
+  let lookupHit = 0;
 
-  const toCreate = [];
-  const toUpdate = [];
   for (const it of rows) {
-    const rid = rkMap[norm(it.rowKey)];
-    if (rid) toUpdate.push({ recordId: rid, row: it });
-    else toCreate.push(it);
+    const rk = s(it.rowKey);
+    if (!rk) continue;
+
+    const payload = buildTargetFields(it);
+
+    // 1) cache
+    let rid = await getCachedTargetId(env, rk);
+    if (rid) {
+      cacheHit += 1;
+      try {
+        await patchTargetRecord(base, token, rid, payload);
+        updated += 1;
+        continue;
+      } catch {
+        // id stale -> clear and fallback lookup
+        rid = "";
+      }
+    } else {
+      cacheMiss += 1;
+    }
+
+    // 2) lookup by rowKey
+    rid = await findTargetIdByRowKey(env, rk);
+    if (rid) {
+      lookupHit += 1;
+      await patchTargetRecord(base, token, rid, payload);
+      await setCachedTargetId(env, rk, rid);
+      updated += 1;
+      continue;
+    }
+
+    // 3) create
+    const newId = await createTargetRecord(base, token, payload);
+    if (newId) await setCachedTargetId(env, rk, newId);
+    created += 1;
   }
 
-  for (let i = 0; i < toCreate.length; i += 100) {
-    const part = toCreate.slice(i, i + 100).map(buildTargetFields);
-    await fetchJson(base, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "xc-token": token,
-        "xc-auth": token,
-        Accept: "application/json",
-      },
-      body: JSON.stringify(part),
-    });
-  }
-
-  for (const uo of toUpdate) {
-    await patchTargetRecord(base, token, uo.recordId, buildTargetFields(uo.row));
-  }
-
-  return { created: toCreate.length, updated: toUpdate.length, existing: existing.length };
+  return { created, updated, cacheHit, cacheMiss, lookupHit };
 }
 
 async function runScan(env) {
@@ -568,7 +597,7 @@ async function runScan(env) {
     throw new Error("Missing env: NOCO_HOST, NOCO_TOKEN, SOURCE_TABLE_ID");
   }
 
-  const batchSize = Math.max(1, n(env.BATCH_SIZE || 20));
+  const batchSize = Math.max(1, n(env.BATCH_SIZE || 5));
   const conc = Math.max(1, n(env.SCAN_CONCURRENCY || 1));
 
   let cursor = await getCursor(env);
@@ -647,7 +676,9 @@ async function runScan(env) {
     rowsAfterDedup: finalRows.length,
     targetCreated: sync.created,
     targetUpdated: sync.updated,
-    targetExisting: sync.existing,
+    cacheHit: sync.cacheHit,
+    cacheMiss: sync.cacheMiss,
+    lookupHit: sync.lookupHit,
     debug: dbg,
   };
 }
