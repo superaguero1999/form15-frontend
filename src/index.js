@@ -251,7 +251,7 @@ function driveCandidates(rawUrl) {
 }
 
 async function downloadExcel(_env, fileUrl) {
-  const MAX_BYTES = 15 * 1024 * 1024; // 15MB
+  const MAX_BYTES = 8 * 1024 * 1024; // 15MB
   const TIMEOUT_MS = 15000; // 15s
   const candidates = driveCandidates(fileUrl);
 
@@ -439,7 +439,14 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
   }
 
   const ab = await downloadExcel(env, fileUrl);
-  const wb = XLSX.read(ab, { type: "array", cellStyles: false, sheetStubs: false });
+  const wb = XLSX.read(ab, {
+  type: "array",
+  cellStyles: false,
+  sheetStubs: false,
+  bookVBA: false,
+  bookDeps: false,
+  cellDates: false,
+});
 
   const sheetCfg = s(env.SCAN_SHEETS);
   const allowedSheets = sheetCfg ? sheetCfg.split(",").map((x) => norm(x)).filter(Boolean) : [];
