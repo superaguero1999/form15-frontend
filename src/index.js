@@ -222,14 +222,15 @@ function driveCandidates(rawUrl) {
   try {
     const u = new URL(rawUrl);
 
+    // drive.google.com/uc?id=...&export=download
     if (/drive\.google\.com$/i.test(u.hostname)) {
       const id = u.searchParams.get("id");
       if (id) {
         out.push(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`);
-        out.push(`https://docs.google.com/uc?export=download&id=${encodeURIComponent(id)}`);
       }
     }
 
+    // docs.google.com/spreadsheets/d/<id>/edit -> export xlsx
     if (/docs\.google\.com$/i.test(u.hostname) && u.pathname.includes("/spreadsheets/d/")) {
       const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
       if (m && m[1]) out.push(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`);
@@ -240,26 +241,52 @@ function driveCandidates(rawUrl) {
 }
 
 async function downloadExcel(env, fileUrl) {
+  const candidates = driveCandidates(fileUrl);
   const proxy = s(env.TARGET_PROXY_URL).replace(/\/+$/, "");
-  if (!proxy) throw new Error("Missing env: TARGET_PROXY_URL (used to download excel)");
-
-  const candidates = driveCandidates(fileUrl).map((u) => `${proxy}?fileUrl=${encodeURIComponent(u)}`);
   let lastErr = "";
 
+  // 1) Ưu tiên tải trực tiếp từ Worker B
   for (const c of candidates) {
     try {
-      const r = await fetch(c);
+      const r = await fetch(c, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Accept: "*/*",
+        },
+      });
       if (!r.ok) {
-        lastErr = `HTTP ${r.status} ${c}`;
+        lastErr = `direct HTTP ${r.status} ${c}`;
         continue;
       }
       return await r.arrayBuffer();
     } catch (e) {
-      lastErr = String(e?.message || e || "");
+      lastErr = `direct ${String(e?.message || e || "")}`;
     }
   }
+
+  // 2) Fallback qua proxy nếu direct fail hết
+  if (proxy) {
+    for (const c of candidates) {
+      const url = `${proxy}?fileUrl=${encodeURIComponent(c)}`;
+      try {
+        const r = await fetch(url, { method: "GET", redirect: "follow" });
+        if (!r.ok) {
+          lastErr = `proxy HTTP ${r.status} ${url}`;
+          continue;
+        }
+        return await r.arrayBuffer();
+      } catch (e) {
+        lastErr = `proxy ${String(e?.message || e || "")}`;
+      }
+    }
+  }
+
   throw new Error("Cannot download excel: " + lastErr);
 }
+
+
 
 function cellText(ws, r, c) {
   const cell = ws[XLSX.utils.encode_cell({ r, c })];
