@@ -251,7 +251,7 @@ function driveCandidates(rawUrl) {
 }
 
 async function downloadExcel(env, fileUrl) {
-  const MAX_MB = Math.max(1, n(env.MAX_EXCEL_MB || 1)); // tăng/giảm trong env
+  const MAX_MB = Math.max(1, n(env.MAX_EXCEL_MB || 15)); // tăng/giảm trong env
   const MAX_BYTES = MAX_MB * 1024 * 1024;
   const TIMEOUT_MS = Math.max(5000, n(env.DOWNLOAD_TIMEOUT_MS || 15000));
 
