@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v7.2-direct-only-2026-04-29";
+const CODE_VERSION = "scanner-v7.3-max15mb-2026-05-01";
 
 export default {
   async fetch(request, env) {
