@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-const CODE_VERSION = "scanner-v7.3-max15mb-2026-05-01";
+const CODE_VERSION = "scanner-v7.3.1-cursor-fix-2026-05-01";
 
 export default {
   async fetch(request, env) {
@@ -313,8 +313,8 @@ async function downloadExcel(env, fileUrl) {
 
       // Magic header kiểm tra nhanh
       const head = ab.slice(0, 4);
-      const isZip = head[0] === 0x50 && head[1] === 0x4b; // PK..
-      const isOle = head[0] === 0xd0 && head[1] === 0xcf; // xls cũ
+      const isZip = head[0] === 0x50 && head[1] === 0x4b;
+      const isOle = head[0] === 0xd0 && head[1] === 0xcf;
       if (!isZip && !isOle) throw new Error("NOT_EXCEL_BINARY");
 
       return ab.buffer;
@@ -463,13 +463,13 @@ async function parseOneWorkbook(env, sourceFields, dbg) {
 
   const ab = await downloadExcel(env, fileUrl);
   const wb = XLSX.read(ab, {
-  type: "array",
-  cellStyles: false,
-  sheetStubs: false,
-  bookVBA: false,
-  bookDeps: false,
-  cellDates: false,
-});
+    type: "array",
+    cellStyles: false,
+    sheetStubs: false,
+    bookVBA: false,
+    bookDeps: false,
+    cellDates: false,
+  });
 
   const sheetCfg = s(env.SCAN_SHEETS);
   const allowedSheets = sheetCfg ? sheetCfg.split(",").map((x) => norm(x)).filter(Boolean) : [];
@@ -803,42 +803,20 @@ async function runScan(env) {
   for (const r of rows) dedup.set(norm(r.rowKey), r);
   const finalRows = [...dedup.values()];
 
-const skipSync = String(env.DEBUG_SKIP_SYNC || "").toLowerCase() === "1";
+  const skipSync = String(env.DEBUG_SKIP_SYNC || "").toLowerCase() === "1";
 
-let sync = { created: 0, updated: 0, cacheHit: 0, cacheMiss: 0, lookupHit: 0 };
-if (!skipSync) {
-  sync = await syncTargetDirect(env, finalRows);
-}
+  let sync = { created: 0, updated: 0, cacheHit: 0, cacheMiss: 0, lookupHit: 0 };
+  if (!skipSync) {
+    sync = await syncTargetDirect(env, finalRows);
+  }
 
-return {
-  batchSize,
-  cursorStart: cursor,
-  cursorNext: nextCursor,
-  scannedSourceRecords: sourceRecords.length,
-  skippedUnchanged,
-  processedChanged,
-  excelFilesErrorTotal: dbg.fileParseError,
-  rowsMatchedTestBen: rows.length,
-  rowsAfterDedup: finalRows.length,
-
-  targetCreated: sync.created,
-  targetUpdated: sync.updated,
-  cacheHit: sync.cacheHit,
-  cacheMiss: sync.cacheMiss,
-  lookupHit: sync.lookupHit,
-
-  skipSync,
-  debug: dbg,
-};
-
-  let nextCursor = cursor + sourceRecords.length;
-  if (sourceRecords.length < batchSize) nextCursor = 0;
-  await setCursor(env, nextCursor);
+  const cursorNextValue = sourceRecords.length < batchSize ? 0 : cursor + sourceRecords.length;
+  await setCursor(env, cursorNextValue);
 
   return {
     batchSize,
     cursorStart: cursor,
-    cursorNext: nextCursor,
+    cursorNext: cursorNextValue,
     scannedSourceRecords: sourceRecords.length,
     skippedUnchanged,
     processedChanged,
@@ -850,6 +828,7 @@ return {
     cacheHit: sync.cacheHit,
     cacheMiss: sync.cacheMiss,
     lookupHit: sync.lookupHit,
+    skipSync,
     debug: dbg,
   };
 }
