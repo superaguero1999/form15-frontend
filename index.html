@@ -171,6 +171,7 @@
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
+      justify-content: flex-end;
     }
     .source-badge {
       display: inline-flex;
@@ -243,6 +244,14 @@
       background: var(--blue);
       color: #fff;
       border-color: var(--blue);
+    }
+    .btn-force-scan {
+      background: #fff7ed;
+      border-color: #fdba74;
+      color: #9a3412;
+    }
+    .btn-force-scan:hover {
+      filter: brightness(0.97);
     }
     .status {
       margin-top: 12px;
@@ -988,6 +997,13 @@
       opacity: 0.65;
       cursor: not-allowed;
     }
+    .force-scan-confirm-modal .refresh-lock-title {
+      color: #9a3412;
+    }
+    .force-scan-confirm-modal .refresh-lock-actions {
+      justify-content: center;
+      flex-wrap: wrap;
+    }
     .col-dynamic {
       width: 120px;
       max-width: 120px;
@@ -1096,6 +1112,9 @@
         <button type="button" id="lab-preview-btn" class="lab-preview-link-btn" hidden>Xem sơ đồ khu vực test</button>
       </div>
       <div class="actions">
+        <button id="refresh-force-btn" class="btn btn-force-scan" type="button" title="Bỏ snapshot và cache Excel, quét lại toàn bộ từ NocoDB">
+          Quét lại từ đầu
+        </button>
         <button id="refresh-btn" class="btn btn-primary" type="button">Refresh dữ liệu</button>
       </div>
     </div>
