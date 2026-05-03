@@ -120,6 +120,7 @@
   const ui = {
     wrapEl: document.querySelector("main.wrap"),
     refreshBtn: document.getElementById("refresh-btn"),
+    refreshForceBtn: document.getElementById("refresh-force-btn"),
     labPreviewBtn: document.getElementById("lab-preview-btn"),
     statusBox: document.getElementById("status-box"),
     metaBox: document.getElementById("meta-box"),
@@ -183,8 +184,12 @@
   /** Chỉ refresh thủ công mới khóa nhập liệu/lưu; refresh nền vẫn cho thao tác bình thường. */
   let isRefreshBlockingInputs = false;
   let refreshLockModalEls = null;
+  /** Modal xác nhận “Quét lại từ đầu” (tránh dùng window.confirm — hay bị chặn trong trình duyệt nhúng/preview). */
+  let forceScanConfirmModalEls = null;
   let publisherLockSession = null;
   let forceScanThisRefresh = false;
+  /** Buộc lấy nguồn qua quét NocoDB + Excel (bỏ snapshot), kèm xóa cache file khi user chọn. */
+  let forceExcelScanFromZeroThisRefresh = false;
   let serveStaleSnapshotNotice = false;
   let latestSourceBadgeText = "Nguồn: đang tải...";
   let latestTtlBadgeText = "TTL snapshot: đang tính...";
@@ -326,6 +331,86 @@
   function closeRefreshLockModal() {
     if (!refreshLockModalEls) return;
     refreshLockModalEls.overlay.classList.remove("open");
+  }
+
+  function ensureForceScanConfirmModal() {
+    if (forceScanConfirmModalEls) return forceScanConfirmModalEls;
+    const overlay = document.createElement("div");
+    overlay.className = "refresh-lock-modal force-scan-confirm-modal";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "force-scan-confirm-title");
+    overlay.innerHTML = [
+      '<div class="refresh-lock-card">',
+      '  <h3 id="force-scan-confirm-title" class="refresh-lock-title">Quét lại từ đầu?</h3>',
+      "  <p class=\"refresh-lock-msg\">Thao tác này sẽ Làm mới toàn bộ dữ liệu. Vui lòng đợi <strong style=\"font-weight:700;color:#dc2626\">10-20 phút</strong>.</p>",
+      '  <div class="refresh-lock-actions">',
+      '    <button type="button" class="btn force-scan-confirm-cancel">Hủy</button>',
+      '    <button type="button" class="btn btn-primary force-scan-confirm-ok">Tiếp tục quét</button>',
+      "  </div>",
+      "</div>",
+    ].join("");
+    document.body.appendChild(overlay);
+    const btnCancel = overlay.querySelector(".force-scan-confirm-cancel");
+    const btnOk = overlay.querySelector(".force-scan-confirm-ok");
+    forceScanConfirmModalEls = { overlay, btnCancel, btnOk, detachListeners: null };
+    return forceScanConfirmModalEls;
+  }
+
+  function closeForceScanConfirmModal() {
+    if (!forceScanConfirmModalEls) return;
+    forceScanConfirmModalEls.overlay.classList.remove("open");
+    if (typeof forceScanConfirmModalEls.detachListeners === "function") {
+      forceScanConfirmModalEls.detachListeners();
+      forceScanConfirmModalEls.detachListeners = null;
+    }
+  }
+
+  function openForceScanConfirmModal(onConfirm) {
+    const m = ensureForceScanConfirmModal();
+    closeForceScanConfirmModal();
+
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const onCancel = (e) => {
+      stop(e);
+      closeForceScanConfirmModal();
+    };
+
+    const onOk = (e) => {
+      stop(e);
+      closeForceScanConfirmModal();
+      if (typeof onConfirm === "function") onConfirm();
+    };
+
+    const onBackdrop = (e) => {
+      if (e.target === m.overlay) onCancel(e);
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") onCancel(e);
+    };
+
+    m.btnCancel.addEventListener("click", onCancel, true);
+    m.btnOk.addEventListener("click", onOk, true);
+    m.overlay.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKeyDown, true);
+
+    m.detachListeners = () => {
+      m.btnCancel.removeEventListener("click", onCancel, true);
+      m.btnOk.removeEventListener("click", onOk, true);
+      m.overlay.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+
+    document.body.appendChild(m.overlay);
+    m.overlay.classList.add("open");
+    try {
+      m.btnOk.focus();
+    } catch (_) {}
   }
 
   function applyManualLock() {
@@ -1283,7 +1368,61 @@
     return seen.size;
   }
 
+  /** Chuẩn hóa nhẹ URL để khớp Drive / Sheets khi query string khác nhau. */
+  function excelUrlMatchKey(url) {
+    const raw = String(url || "").trim();
+    if (!raw) return "";
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.toLowerCase();
+      const id = u.searchParams.get("id");
+      if (id && host.includes("drive.google.com")) return "drive:" + id;
+      const m = u.pathname.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (m) return "sheet:" + m[1];
+      return raw.split("#")[0];
+    } catch (_) {
+      return raw.split("#")[0];
+    }
+  }
+
+  function buildAllowedExcelUrlKeysByTaskCode(config, sourceRecords) {
+    const byTask = new Map();
+    const allKeys = new Set();
+    const arr = Array.isArray(sourceRecords) ? sourceRecords : [];
+    for (const record of arr) {
+      const fields = dataService.getRecordFields(record);
+      const meta = dataService.getTaskMetaFromRecord(config, record);
+      const tc = String(meta.taskCode || "").trim();
+      const excelVal = dataService.getExcelFieldValue(config, fields);
+      const urls = dataService.collectExcelUrls(excelVal);
+      for (const url of urls) {
+        const k = excelUrlMatchKey(url);
+        if (!k) continue;
+        allKeys.add(k);
+        if (tc) {
+          if (!byTask.has(tc)) byTask.set(tc, new Set());
+          byTask.get(tc).add(k);
+        }
+      }
+    }
+    return { byTask, allKeys };
+  }
+
+  function filterSnapshotRowsByCurrentSource(config, snapshotRows, allowed) {
+    const { byTask, allKeys } = allowed;
+    const rows = Array.isArray(snapshotRows) ? snapshotRows : [];
+    return rows.filter((row) => {
+      if (!row || typeof row !== "object") return false;
+      const fk = excelUrlMatchKey(row.fileUrl);
+      if (!fk) return false;
+      const tc = String(row.taskCode || "").trim();
+      if (tc && byTask.has(tc)) return byTask.get(tc).has(fk);
+      return allKeys.has(fk);
+    });
+  }
+
   function getDataSourceMode() {
+    if (forceExcelScanFromZeroThisRefresh) return "scan";
     if (forceScanThisRefresh) return "scan";
     if (serveStaleSnapshotNotice) return "snapshot";
     if (isPublisherRole()) return "scan";
@@ -1419,8 +1558,7 @@
     }
   }
 
-  async function tryAcquirePublisherLock() {
-    if (!shouldAttemptPublisherFlow()) return null;
+  async function acquirePublisherLockSessionInternal() {
     const pubCfg = getPublisherConfig();
     const lockCfg = pubCfg.lock || {};
     const acquireUrl = String(lockCfg.acquireUrl || "").trim();
@@ -1439,6 +1577,22 @@
       });
     }, beatMs);
     return { ownerId: realOwner, timerId };
+  }
+
+  async function tryAcquirePublisherLock() {
+    if (!shouldAttemptPublisherFlow()) return null;
+    return acquirePublisherLockSessionInternal();
+  }
+
+  /** Cho «Quét lại từ đầu»: consumer cũng có thể publish snapshot nếu worker chấp nhận lock/publish. */
+  async function tryAcquirePublisherLockForForceScanPublish() {
+    const snapCfg = CONFIG.snapshot || {};
+    if (snapCfg.publishAfterForceScan === false) return null;
+    const pubCfg = getPublisherConfig();
+    if (!pubCfg || pubCfg.publish === false || (pubCfg.publish && pubCfg.publish.enabled === false)) {
+      return null;
+    }
+    return acquirePublisherLockSessionInternal();
   }
 
   async function releasePublisherLock(lockSession) {
@@ -1477,11 +1631,13 @@
       publisherStats: publisherStats && typeof publisherStats === "object" ? publisherStats : {},
     };
     const res = await postJsonWithTimeout(publishUrl, payload, timeoutMs);
+    const builtAtOut = String((res && res.builtAt) || builtAtIso || "").trim();
     return {
       ok: !!(res && res.ok),
       rowsCount: Number(res && res.rowsCount || 0),
       hash: String(res && res.hash || ""),
       version: String(res && res.version || ""),
+      builtAt: builtAtOut,
     };
   }
 
@@ -1624,16 +1780,25 @@
   async function runRefresh(options = {}) {
     const silent = !!options.silent;
     const demoMode = !!options.demoMode;
+    const forceExcelScanFromZero = !!options.forceExcelScanFromZero && !demoMode;
     const refreshStartedAtTs = nowMs();
-    const refreshModeText = demoMode ? "DEMO" : (silent ? "Tự động" : "Thủ công");
+    const refreshModeText = demoMode
+      ? "DEMO"
+      : forceExcelScanFromZero
+        ? "Quét lại từ đầu"
+        : (silent ? "Tự động" : "Thủ công");
     if (isRefreshing) return;
     isRefreshing = true;
     isRefreshBlockingInputs = !silent;
+    if (forceExcelScanFromZero) {
+      cacheService.clearFileCache(CACHE_CONFIG);
+    }
     setSourceBadge("loading", getSnapshotFallbackCount());
     setTtlBadgeText("TTL snapshot: đang tính...", "");
     updateFrameState();
     applyManualLock();
     ui.refreshBtn.disabled = true;
+    if (ui.refreshForceBtn) ui.refreshForceBtn.disabled = true;
     if (refreshLockModalEls && refreshLockModalEls.btn) {
       refreshLockModalEls.btn.disabled = true;
     }
@@ -1642,6 +1807,7 @@
     let publisherAcquireErrorText = "";
     let snapshotWasFreshByTtl = false;
     try {
+      forceExcelScanFromZeroThisRefresh = !!forceExcelScanFromZero;
       forceScanThisRefresh = false;
       serveStaleSnapshotNotice = false;
       const ttlCheck = await hasFreshSnapshotByTtlForAutoWithMeta();
@@ -1727,7 +1893,31 @@
 
       // Snapshot đúng định dạng kết quả cuối => bỏ toàn bộ scan Excel để tăng tốc.
       if (sourceResult && sourceResult.source === "snapshot" && sourceResult.snapshotReady) {
-        const results = records.map((r) => (r && typeof r === "object" ? Object.assign({}, r) : r));
+        let snapshotRows = records;
+        let snapshotReconcileNote = "";
+        const snapCfg = CONFIG.snapshot || {};
+        if (snapCfg.reconcileWithNocoSource !== false) {
+          try {
+            const srcFetch = await dataService.fetchAllRecords(CONFIG);
+            const sourceRecs = Array.isArray(srcFetch && srcFetch.rows) ? srcFetch.rows : [];
+            const allowed = buildAllowedExcelUrlKeysByTaskCode(CONFIG, sourceRecs);
+            const filtered = filterSnapshotRowsByCurrentSource(CONFIG, snapshotRows, allowed);
+            if (filtered.length !== snapshotRows.length) {
+              snapshotReconcileNote =
+                "Lọc snapshot theo link Excel hiện tại (NocoDB nguồn): " +
+                snapshotRows.length +
+                " → " +
+                filtered.length +
+                " dòng.";
+              console.info(snapshotReconcileNote);
+            }
+            snapshotRows = filtered;
+          } catch (reconcileErr) {
+            console.warn("Không lọc snapshot theo NocoDB nguồn — giữ nguyên snapshot.", reconcileErr);
+          }
+        }
+
+        const results = snapshotRows.map((r) => (r && typeof r === "object" ? Object.assign({}, r) : r));
         let manualLoaded = 0;
         try {
           if (manualService && typeof manualService.fetchManualMap === "function") {
@@ -1782,7 +1972,7 @@
           results,
           Number(sourceResult && sourceResult.excelFilesScannedTotal || 0),
           Number(sourceResult && sourceResult.excelFilesErrorTotal || 0),
-          Number(sourceResult && sourceResult.excelFilesOkWithTestBen || 0)
+          computeExcelFilesOkWithTestBen(results)
         );
         const sourceNocoTotal = Math.max(0, Number(sourceResult && sourceResult.nocoSourceRecordsTotal || 0));
         const metaParts = [
@@ -1807,6 +1997,7 @@
           "Nguồn auth mode: " + String(sourceResult && sourceResult.authMode || ""),
           "Sheets cấu hình: " + CONFIG.sheetNames.join(", "),
           "Dòng có dữ liệu manual: " + manualLoaded,
+          snapshotReconcileNote || "",
           (sourceResult && sourceResult.fallbackReason) ? ("Ghi chú: " + String(sourceResult.fallbackReason)) : "",
           serveStaleSnapshotNotice
             ? "Dữ liệu đang cập nhật nền, bạn vẫn dùng được snapshot gần nhất."
@@ -2120,18 +2311,46 @@
       const refreshEndedAtTs = nowMs();
       const elapsed = Math.round(performance.now() - startedAt);
       let publishMeta = "";
-      if (!demoMode && publisherLockSession && publisherLockSession.ownerId) {
-        const publishStats = {
-          nocoSourceRecordsTotal: records.length,
-          excelFilesScannedTotal: filesToScan.length,
-          excelFilesErrorTotal: scanStats.fileErrors,
-          excelFilesOkWithTestBen: computeExcelFilesOkWithTestBen(results),
-        };
-        const publishRes = await publishSnapshotRows(results, new Date().toISOString(), publishStats);
-        if (publishRes && publishRes.ok) {
-          publishMeta = "Publisher publish: OK | Rows: " + publishRes.rowsCount;
-        } else {
-          publishMeta = "Publisher publish: bỏ qua";
+      if (!demoMode) {
+        const wantForcePublishShare =
+          !!forceExcelScanFromZero &&
+          CONFIG.snapshot &&
+          CONFIG.snapshot.publishAfterForceScan !== false &&
+          !(getPublisherConfig().publish && getPublisherConfig().publish.enabled === false);
+
+        if (wantForcePublishShare && !publisherLockSession) {
+          try {
+            const pubSession = await tryAcquirePublisherLockForForceScanPublish();
+            if (pubSession && pubSession.ownerId) publisherLockSession = pubSession;
+          } catch (forcePubErr) {
+            const msg = String(forcePubErr && forcePubErr.message || forcePubErr || "");
+            console.warn("Quét lại từ đầu: không publish snapshot cho mọi người dùng:", forcePubErr);
+            publishMeta = "Publish snapshot (chia sẻ): thất bại — " + msg.slice(0, 220);
+          }
+        }
+
+        if (publisherLockSession && publisherLockSession.ownerId) {
+          const builtIso = new Date().toISOString();
+          const publishStats = {
+            nocoSourceRecordsTotal: records.length,
+            excelFilesScannedTotal: filesToScan.length,
+            excelFilesErrorTotal: scanStats.fileErrors,
+            excelFilesOkWithTestBen: computeExcelFilesOkWithTestBen(results),
+          };
+          const publishRes = await publishSnapshotRows(results, builtIso, publishStats);
+          if (publishRes && publishRes.ok) {
+            const shareHint = forceExcelScanFromZero ? "Đã publish snapshot cho mọi người dùng | " : "";
+            publishMeta =
+              shareHint +
+              "Publisher publish: OK | Rows: " +
+              publishRes.rowsCount +
+              (publishRes.builtAt ? (" | Snapshot builtAt (server): " + publishRes.builtAt) : "");
+            if (publishRes.builtAt) setTtlBadgeFromBuiltAt(publishRes.builtAt);
+          } else if (publishRes && publishRes.skipped) {
+            if (!publishMeta) publishMeta = "Publisher publish: bỏ qua (cấu hình)";
+          } else {
+            publishMeta = publishMeta || "Publisher publish: không thành công";
+          }
         }
       }
 
@@ -2149,6 +2368,7 @@
         excelFileStats[1],
         excelFileStats[2],
         "Loại refresh: " + refreshModeText,
+        forceExcelScanFromZeroThisRefresh ? "Quét từ đầu: có (đã xóa cache Excel trình duyệt, bỏ snapshot)" : "",
         "Nguồn dữ liệu: " + (
           sourceResult && sourceResult.source === "snapshot" ? "Snapshot" :
           sourceResult && sourceResult.source === "scan-fallback" ? "Hybrid (fallback scan)" :
@@ -2244,11 +2464,13 @@
       await releasePublisherLock(publisherLockSession);
       publisherLockSession = null;
       forceScanThisRefresh = false;
+      forceExcelScanFromZeroThisRefresh = false;
       serveStaleSnapshotNotice = false;
       isRefreshing = false;
       isRefreshBlockingInputs = false;
       updateFrameState();
       ui.refreshBtn.disabled = false;
+      if (ui.refreshForceBtn) ui.refreshForceBtn.disabled = false;
       if (refreshLockModalEls && refreshLockModalEls.btn) {
         refreshLockModalEls.btn.disabled = false;
       }
@@ -2276,6 +2498,13 @@
   }
 
   ui.refreshBtn.addEventListener("click", () => runRefresh({ silent: false }));
+  if (ui.refreshForceBtn) {
+    ui.refreshForceBtn.addEventListener("click", () => {
+      openForceScanConfirmModal(() => {
+        void runRefresh({ silent: false, forceExcelScanFromZero: true }).catch((err) => console.error("runRefresh:", err));
+      });
+    });
+  }
   initLabPreviewLink();
   if (ui.exportExcelBtn) {
     ui.exportExcelBtn.addEventListener("click", () => exportFilteredToExcel());

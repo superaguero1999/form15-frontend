@@ -6,6 +6,16 @@
       metaUrl: "https://form15-nocodb-proxy.superaguero1999.workers.dev/snapshot.meta.json",
       dataUrl: "https://form15-nocodb-proxy.superaguero1999.workers.dev/snapshot.json",
       requestTimeoutMs: 25000,
+      /**
+       * true: sau khi tải snapshot, lọc dòng theo link Excel đang có trên bản ghi NocoDB nguồn.
+       * Tránh hiển thị dòng “Test bền” của file cũ khi tác vụ đã đổi Link BCexcel (snapshot server có thể chưa kịp rebuild).
+       */
+      reconcileWithNocoSource: true,
+      /**
+       * Sau «Quét lại từ đầu» + quét xong: thử acquire lock và publish snapshot (nếu API/worker cho phép).
+       * Giúp mọi tab/người dùng tải snapshot mới; builtAt/hash phụ thuộc worker phản hồi publish.
+       */
+      publishAfterForceScan: true,
     },
     publisher: {
       /** auto | consumer | publisher */

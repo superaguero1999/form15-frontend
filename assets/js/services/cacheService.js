@@ -88,12 +88,19 @@
     saveFileCacheMap(cacheConfig, nextMap);
   }
 
+  function clearFileCache(cacheConfig) {
+    try {
+      localStorage.removeItem(cacheConfig.fileKey);
+    } catch (_) {}
+  }
+
   global.Form15CacheService = {
     saveCache,
     loadCache,
     isCacheFresh,
     getFreshFileCache,
     saveFileCache,
+    clearFileCache,
   };
 })(window);
 
